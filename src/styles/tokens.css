@@ -1,0 +1,79 @@
+/*
+  Design tokens — derived from the "END IS UI" (chrome) and Finch-style
+  floorplate (canvas content) reference screenshots.
+*/
+:root {
+  /* --- UI chrome (everything but the drawing canvas) --- */
+  --chrome-bg: #f0f0ee;
+  --chrome-surface-raised: #e8e8e5;
+  --chrome-hairline: #d8d6d0;
+
+  --ink-strong: #1a1a18;
+  --ink-muted: #6e6c64;
+  --ink-faint: #a8a69e;
+
+  --pill-bg: #1a1a18;
+  --pill-fg: #ffffff;
+
+  --slider-track: #d0cec8;
+  --slider-thumb: #1a1a18;
+
+  /* --- drawing canvas --- */
+  --canvas-bg: #f7f6f2;
+  --canvas-dot: #d8d6d0;
+
+  --line-strong: #1a1a18;
+  --poche-fill: rgba(26, 26, 24, 0.88);
+
+  --core-fill: #1e2340;
+  --core-line: #4a5080;
+  --core-label: #8a90b0;
+
+  --ghost-core-line: rgba(30, 35, 64, 0.35);
+  --ghost-core-label: #9a9aa4;
+
+  --zone-fill: rgba(91, 143, 168, 0.12);
+  --zone-line: rgba(91, 143, 168, 0.6);
+  --zone-label: #5b8fa8;
+
+  --dim-line: #c0392b;
+  --calibration-dot: #e24b4a;
+
+  --column-line: #1a1a18;
+
+  /* --- type --- */
+  --font-ui: "Geist Sans", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-num: "Geist Sans", "Inter", ui-sans-serif, sans-serif;
+
+  /* --- geometry --- */
+  --radius-pill: 4px;
+  --radius-control: 2px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-ui);
+  color: var(--ink-strong);
+  background: var(--chrome-bg);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+}
+
+::selection {
+  background: var(--ink-strong);
+  color: #fff;
+}
