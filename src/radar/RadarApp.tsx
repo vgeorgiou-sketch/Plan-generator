@@ -7,16 +7,18 @@ import { OpportunityList } from './views/OpportunityList'
 import { DetailPanel } from './views/DetailPanel'
 import { WeeklyDigest } from './views/WeeklyDigest'
 import { MapView } from './views/MapView'
+import { ModelView } from './views/ModelView'
 import { RfpMonitor } from './views/RfpMonitor'
 import { PreRfpMonitor } from './views/PreRfpMonitor'
 
-type ViewKey = 'dashboard' | 'list' | 'digest' | 'map' | 'rfp' | 'signals'
+type ViewKey = 'dashboard' | 'list' | 'digest' | 'map' | 'model' | 'rfp' | 'signals'
 
 const VIEW_TITLES: Record<ViewKey, { title: string; sub: string }> = {
   dashboard: { title: 'Dashboard', sub: 'Where attention is needed this week' },
   list: { title: 'Opportunities', sub: 'All tracked leads, filterable' },
   digest: { title: 'Weekly digest', sub: 'Briefing for the partners’ meeting' },
   map: { title: 'Location view', sub: 'Geographic clusters across London' },
+  model: { title: '3D model', sub: 'The radar as an architectural model — orbit, hover, click' },
   rfp: { title: 'RFP / tender monitor', sub: 'Formal procurement signals' },
   signals: { title: 'Pre-RFP signals', sub: 'Opportunities before procurement exists' },
 }
@@ -43,6 +45,7 @@ export default function RadarApp() {
     { key: 'list', label: 'Opportunities', count: OPPORTUNITIES.length },
     { key: 'digest', label: 'Weekly digest' },
     { key: 'map', label: 'Location view' },
+    { key: 'model', label: '3D model' },
   ]
   const navSources: { key: ViewKey; label: string; count?: number }[] = [
     { key: 'signals', label: 'Pre-RFP signals', count: signalCount },
@@ -119,6 +122,7 @@ export default function RadarApp() {
           )}
           {view === 'digest' && <WeeklyDigest opportunities={OPPORTUNITIES} onOpen={setOpenId} />}
           {view === 'map' && <MapView opportunities={OPPORTUNITIES} onFilterBorough={goToBorough} />}
+          {view === 'model' && <ModelView opportunities={OPPORTUNITIES} onOpen={setOpenId} />}
           {view === 'rfp' && <RfpMonitor onOpen={setOpenId} />}
           {view === 'signals' && <PreRfpMonitor opportunities={OPPORTUNITIES} onOpen={setOpenId} />}
         </main>
