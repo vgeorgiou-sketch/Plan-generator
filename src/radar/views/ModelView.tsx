@@ -347,7 +347,7 @@ export function ModelView({
     <div>
       <Card>
         <SectionTitle aside="Drag to orbit · scroll to zoom · click a data point to open its lead card">
-          London model — opportunities in 3D
+          Signal grid — London opportunities in 3D
         </SectionTitle>
         <div ref={mountRef} style={{ position: 'relative', height: 620, borderRadius: 6, overflow: 'hidden' }}>
           {tip && (

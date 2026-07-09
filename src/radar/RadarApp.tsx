@@ -18,7 +18,7 @@ const VIEW_TITLES: Record<ViewKey, { title: string; sub: string }> = {
   list: { title: 'Opportunities', sub: 'All tracked leads, filterable' },
   digest: { title: 'Weekly digest', sub: 'Briefing for the partners’ meeting' },
   map: { title: 'Location view', sub: 'Geographic clusters across London' },
-  model: { title: '3D model', sub: 'The radar as an architectural model — orbit, hover, click' },
+  model: { title: 'Signal grid', sub: 'The radar in 3D — orbit, hover, click a data point' },
   rfp: { title: 'RFP / tender monitor', sub: 'Formal procurement signals' },
   signals: { title: 'Pre-RFP signals', sub: 'Opportunities before procurement exists' },
 }
@@ -45,7 +45,7 @@ export default function RadarApp() {
     { key: 'list', label: 'Opportunities', count: OPPORTUNITIES.length },
     { key: 'digest', label: 'Weekly digest' },
     { key: 'map', label: 'Location view' },
-    { key: 'model', label: '3D model' },
+    { key: 'model', label: 'Signal grid' },
   ]
   const navSources: { key: ViewKey; label: string; count?: number }[] = [
     { key: 'signals', label: 'Pre-RFP signals', count: signalCount },
