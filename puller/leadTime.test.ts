@@ -1,0 +1,66 @@
+/*
+  Run: node --experimental-strip-types puller/leadTime.test.ts
+  Proves the Task 0 pure logic against a realistic Companies House
+  filing-history fixture — no network required.
+*/
+
+import { isOwnershipChange, leadTimeDays, summariseLeadTime, type ChFiling } from './leadTime.ts'
+
+let failures = 0
+function assert(name: string, cond: boolean, detail?: unknown) {
+  if (cond) console.log(`  ok   ${name}`)
+  else {
+    failures++
+    console.log(`  FAIL ${name}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ''}`)
+  }
+}
+
+// Realistic shape of GET /company/{n}/filing-history items.
+const fixture: ChFiling[] = [
+  { transaction_id: 't1', category: 'incorporation', type: 'NEWINC', date: '2019-03-11', description: 'incorporation-company' },
+  { transaction_id: 't2', category: 'confirmation-statement', type: 'CS01', date: '2024-03-20', description: 'confirmation-statement' },
+  { transaction_id: 't3', category: 'persons-with-significant-control', type: 'PSC01', date: '2025-11-04', description: 'psc-individual-appointment' },
+  { transaction_id: 't4', category: 'mortgage', type: 'MR01', date: '2025-11-28', description: 'create-a-registered-charge' },
+  { transaction_id: 't5', category: 'accounts', type: 'AA', date: '2026-01-10', description: 'accounts' },
+  { transaction_id: 't6', category: 'change-of-name', type: 'NM01', date: '2026-02-02', description: 'change-of-name' },
+]
+
+console.log('ownership-change classification')
+assert('PSC change is an ownership change', isOwnershipChange(fixture[2]))
+assert('new charge (mortgage) is an ownership change', isOwnershipChange(fixture[3]))
+assert('change of name is an ownership change', isOwnershipChange(fixture[5]))
+assert('confirmation statement is NOT an ownership change', !isOwnershipChange(fixture[1]))
+assert('accounts filing is NOT an ownership change', !isOwnershipChange(fixture[4]))
+
+console.log('\nlead-time maths')
+assert('exact day diff', leadTimeDays('2026-03-01', '2026-06-01') === 92, leadTimeDays('2026-03-01', '2026-06-01'))
+assert('month-granularity dates parse (YYYY-MM → 1st)', leadTimeDays('2026-04', '2026-06-01') === 61, leadTimeDays('2026-04', '2026-06-01'))
+
+console.log('\nsummariseLeadTime against June 2026 press baseline')
+{
+  const r = summariseLeadTime(fixture, '2026-06-01')
+  // Earliest ownership-change filing within 730 days before press = PSC change 2025-11-04.
+  // (The 2019 incorporation is outside the 2-year window.)
+  assert('driving filing is the 2025-11-04 PSC change', r.drivingFiling?.date === '2025-11-04', r.drivingFiling)
+  assert('lead time = 209 days before the press report', r.leadTimeDays === 209, r.leadTimeDays)
+  assert('all four ownership-change filings surfaced as candidates', r.candidates.length === 4, r.candidates.map((c) => c.date))
+  assert('candidates are oldest-first', r.candidates[0].date === '2019-03-11')
+}
+
+console.log('\nwindow + edge cases')
+{
+  const none = summariseLeadTime(
+    [{ category: 'accounts', date: '2026-01-01' }, { category: 'confirmation-statement', date: '2026-02-01' }],
+    '2026-06-01',
+  )
+  assert('no ownership-change filings → null lead time', none.drivingFiling === null && none.leadTimeDays === null)
+}
+{
+  // A filing after the press date must not count toward the headline.
+  const future = summariseLeadTime([{ category: 'mortgage', date: '2026-07-01' }], '2026-06-01')
+  assert('filing after press date is not the driver', future.drivingFiling === null, future)
+  assert('but is still returned as a candidate', future.candidates.length === 1)
+}
+
+console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)
+process.exit(failures === 0 ? 0 : 1)
