@@ -14,45 +14,57 @@ Companies House, EPC and Southwark Idox are **denied at the proxy** (403 on
 CONNECT — verified), and no API keys are present. So the live pulls cannot
 execute here, and **no lead-time number can be produced in this environment.**
 
-Run it on a machine with open egress and a free key:
+Run it on a machine with open egress and free keys (copy `.env.example` → `.env`
+and fill in, or export directly):
 
 ```bash
-# free key: https://developer.company-information.service.gov.uk/
-export CH_API_KEY=your-key-here
-node --experimental-strip-types puller/task0.ts
+# Companies House: https://developer.company-information.service.gov.uk/
+# EPC Open Data:   https://epc.opendatacommunities.org/
+node --env-file=.env --experimental-strip-types puller/task0.ts   # just the lead-time validation
+node --env-file=.env --experimental-strip-types puller/run.ts     # the whole spike, Tasks 1→5
 ```
 
-Without a key or egress the CLI **fails loudly and prints no number** — a
-fabricated lead time is worse than no answer, and is the exact failure this
-whole model exists to prevent.
+Without keys or egress every CLI **fails loudly and prints no number** — a
+fabricated result is worse than no answer, and is the exact failure this whole
+model exists to prevent. (`--env-file` needs Node ≥ 20; otherwise `export` the vars.)
 
-## What's built (and tested here)
+## What's built
 
-| File | Status |
-|------|--------|
-| `leadTime.ts` | Pure logic: ownership-change classification + lead-time maths. **Unit-tested** (`leadTime.test.ts`, all pass) — no network needed. |
-| `companiesHouse.ts` | Real API client: search, advanced-search (Task 2), filing-history (Task 0), charges (Task 3). Key from `CH_API_KEY`, HTTP Basic. |
-| `task0.ts` | Task 0 end-to-end CLI. Finds candidate SPVs → filing history → earliest ownership-change filing → lead time vs the June 2026 press baseline. |
+Every pure core is **unit-tested here, offline**; the network layers are thin
+and run where egress exists.
+
+| File | Task | Tested |
+|------|------|--------|
+| `leadTime.ts` | 0 — ownership-change classification + lead-time maths | `leadTime.test.ts` ✓ |
+| `companiesHouse.ts` | 0/2/3 — real API client (search, advanced-search, filing-history, charges) | — (network) |
+| `task0.ts` | 0 — Southwark Bridge Road lead-time CLI | — (orchestration) |
+| `epc.ts` | 1 — EPC universe client + `normaliseEpcRow` / `isLargeCommercial` | `parsers.test.ts` ✓ |
+| `spvScan.ts` | 2 — new-SPV scan across real-estate SIC codes | — (orchestration) |
+| `kineticSignals.ts` | 2/3 — CH hits → kinetic signals (SPV `inferred`, charge `filed`) | `parsers.test.ts` ✓ |
+| `southwarkDemolition.ts` | 4 — Idox weekly-list fetch + `parseWeeklyList` | `parsers.test.ts` ✓ |
+| `addressMatch.ts` | 5 — fuzzy address matching | `crossReference.test.ts` ✓ |
+| `crossReference.ts` | 5 — convergence join (pressure × kinetic) | `crossReference.test.ts` ✓ |
+| `run.ts` | 1→5 — the whole spike, converged buildings + evidence | — (orchestration) |
 
 ```bash
-node --experimental-strip-types puller/leadTime.test.ts   # all pass, offline
+node --experimental-strip-types puller/leadTime.test.ts
+node --experimental-strip-types puller/crossReference.test.ts
+node --experimental-strip-types puller/parsers.test.ts     # all pass, offline
 ```
 
-## Deliberately NOT built blind
+## Needs verification against live responses
 
-Building an untested scraper against a live source I can't reach would produce
-code I can't stand behind — the opposite of what this model values. These need
-live iteration against real responses and should be built where egress exists:
+The pure parsers are tested against representative fixtures, but two sources
+must be checked against their real output before the numbers are trusted:
 
-- **Task 1 — EPC/VOA universe.** EPC Open Data needs its own key + real
-  response shapes; VOA bulk access terms need confirming at voa.gov.uk first.
-- **Task 4 — Southwark demolition notices.** Idox Public Access has no API;
-  check `southwark.gov.uk/download-our-planning-datasets` for bulk data before
-  scraping the Weekly List HTML. Respect robots.txt; weekly cadence only.
-
-Task 2 (new SPVs) and Task 3 (charges) are wired in `companiesHouse.ts`
-(`advancedSearch`, `companyCharges`) but not yet orchestrated into a scan —
-that's the next step once Task 0 proves the mechanism on real data.
+- **EPC pagination.** `epcSearch` pulls one page; EPC uses `search-after` for
+  more. Fine for the spike, widen for production.
+- **Idox weekly-list HTML.** `parseWeeklyList` matches a standard Idox install;
+  Southwark's markup must be confirmed. Check
+  `southwark.gov.uk/download-our-planning-datasets` for bulk data first, then
+  respect robots.txt and the weekly cadence.
+- **VOA.** Cross-check source for the universe — confirm bulk access terms at
+  voa.gov.uk before wiring it in (not built blind).
 
 ## Out of scope (per brief)
 
