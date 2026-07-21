@@ -8,8 +8,11 @@
 */
 
 import type { ChFiling } from './leadTime.ts'
+import { describeHttpFailure, describeNetworkThrow, isEgressProxied } from './http.ts'
 
-const BASE = 'https://api.company-information.service.gov.uk'
+const HOST = 'api.company-information.service.gov.uk'
+const BASE = `https://${HOST}`
+const CRED_HINT = 'Use a REST API key from an application at developer.company-information.service.gov.uk (set CH_API_KEY).'
 
 export interface CompanyHit {
   company_name: string
@@ -42,15 +45,22 @@ async function chGet<T>(path: string): Promise<T> {
   try {
     res = await fetch(BASE + path, { headers: { Authorization: authHeader() } })
   } catch (cause) {
+    throw new Error(describeNetworkThrow('Companies House', HOST, path, cause as Error))
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
     throw new Error(
-      `Network request to Companies House failed for ${path}. ` +
-        `This environment may block outbound egress to api.company-information.service.gov.uk — ` +
-        `run where that host is reachable. Cause: ${(cause as Error).message}`,
+      describeHttpFailure({
+        service: 'Companies House',
+        host: HOST,
+        status: res.status,
+        path,
+        body,
+        proxied: isEgressProxied(),
+        credHint: CRED_HINT,
+      }),
     )
   }
-  if (res.status === 401) throw new Error('Companies House returned 401 — check CH_API_KEY is valid.')
-  if (res.status === 429) throw new Error('Companies House rate limit hit (429) — back off and retry.')
-  if (!res.ok) throw new Error(`Companies House ${res.status} for ${path}`)
   return (await res.json()) as T
 }
 

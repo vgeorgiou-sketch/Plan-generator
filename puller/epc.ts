@@ -11,8 +11,11 @@
 
 import type { Signal } from '../signal-model/types.ts'
 import type { UniverseRecord } from './crossReference.ts'
+import { describeHttpFailure, describeNetworkThrow, isEgressProxied } from './http.ts'
 
-const BASE = 'https://epc.opendatacommunities.org/api/v1/non-domestic/search'
+const HOST = 'epc.opendatacommunities.org'
+const BASE = `https://${HOST}/api/v1/non-domestic/search`
+const CRED_HINT = 'Register free at epc.opendatacommunities.org and set EPC_EMAIL and EPC_API_KEY.'
 
 export interface EpcRow {
   'lmk-key'?: string
@@ -84,13 +87,22 @@ export async function epcSearch(postcode: string, size = 100): Promise<EpcRow[]>
   try {
     res = await fetch(`${BASE}?${q}`, { headers: { Authorization: authHeader(), Accept: 'application/json' } })
   } catch (cause) {
+    throw new Error(describeNetworkThrow('EPC Open Data', HOST, `?postcode=${postcode}`, cause as Error))
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
     throw new Error(
-      `EPC request failed for ${postcode}. This environment may block egress to ` +
-        `epc.opendatacommunities.org — run where reachable. Cause: ${(cause as Error).message}`,
+      describeHttpFailure({
+        service: 'EPC Open Data',
+        host: HOST,
+        status: res.status,
+        path: `?postcode=${postcode}`,
+        body,
+        proxied: isEgressProxied(),
+        credHint: CRED_HINT,
+      }),
     )
   }
-  if (res.status === 401) throw new Error('EPC returned 401 — check EPC_EMAIL / EPC_API_KEY.')
-  if (!res.ok) throw new Error(`EPC ${res.status} for ${postcode}`)
   const data = (await res.json()) as { rows?: EpcRow[] }
   return data.rows ?? []
 }
