@@ -4,7 +4,15 @@
   name always populated — the fix for company names showing as "undefined".
 */
 
-import { fromAdvancedItem, fromSearchItem, namesMatch, pickCompanyName, NAME_UNAVAILABLE } from './companiesHouse.ts'
+import {
+  findControllers,
+  fromAdvancedItem,
+  fromSearchItem,
+  nameContains,
+  namesMatch,
+  pickCompanyName,
+  NAME_UNAVAILABLE,
+} from './companiesHouse.ts'
 import { spvToHit } from './kineticSignals.ts'
 
 let failures = 0
@@ -79,6 +87,22 @@ console.log('\nnamesMatch — exact applicant matching (Task 0 headline)')
   assert('different entity suffix does NOT match (LLP ≠ LTD)', !namesMatch('Southwark Bridge Road LLP', 'Southwark Bridge Road Ltd'))
   assert('different name does not match', !namesMatch('Southwark Bridge Road LLP', 'HUB SBR Developments Ltd'))
   assert('undefined never matches', !namesMatch(undefined, 'Southwark Bridge Road LLP'))
+}
+
+console.log('\nPSC controller matching (HUB / Bridges Fund Management)')
+{
+  assert('"HUB" matches as a whole token in "HUB SBR LIMITED"', nameContains('HUB SBR LIMITED', 'HUB'))
+  assert('"HUB" does NOT match inside "HUBBARD LTD"', !nameContains('HUBBARD LTD', 'HUB'))
+  assert('multi-word "Bridges Fund Management" matches contiguously', nameContains('BRIDGES FUND MANAGEMENT LIMITED', 'Bridges Fund Management'))
+  assert('non-contiguous tokens do not match', !nameContains('BRIDGES OF LONDON MANAGEMENT LTD', 'Bridges Fund Management'))
+
+  const pscNames = ['HUB SBR (GP) LIMITED', 'BRIDGES FUND MANAGEMENT LIMITED', 'A N Other']
+  const matches = findControllers(pscNames, ['HUB', 'Bridges Fund Management'])
+  assert('HUB flagged as named', matches[0].named && matches[0].matchedBy[0] === 'HUB SBR (GP) LIMITED', matches[0])
+  assert('Bridges Fund Management flagged as named', matches[1].named && matches[1].matchedBy[0].includes('BRIDGES FUND MANAGEMENT'), matches[1])
+
+  const noneNamed = findControllers(['SOME NOMINEE LTD'], ['HUB', 'Bridges Fund Management'])
+  assert('neither named when absent', !noneNamed[0].named && !noneNamed[1].named)
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)

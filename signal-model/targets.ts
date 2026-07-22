@@ -30,9 +30,20 @@ export interface ValidationTarget {
    * not to whichever candidate happens to have the longest lead.
    */
   applicant?: string
+  /**
+   * Confirmed Companies House number. When set, Task 0 pulls THIS company
+   * directly and skips the keyword search entirely — the keyword search caused
+   * a false positive (a same-keyword unrelated company), so a confirmed number
+   * is authoritative.
+   */
+  companyNumber?: string
+  /** Confirmed incorporation date, for corroborating the driving filing. */
+  incorporatedOn?: string
   /** Assumed press publication date for the lead-time baseline — adjust to the exact issue date when known. */
   pressBaseline: string
-  /** Search terms for the Companies House puller (Task 0, step 1). */
+  /** Corporate controllers to flag if named in the PSC register. */
+  controllersOfInterest?: string[]
+  /** Fallback keyword search terms (used only when companyNumber is not set). */
   companiesHouseSearch: string[]
   knownEvents: KnownEvent[]
 }
@@ -45,9 +56,12 @@ export const SOUTHWARK_BRIDGE_ROAD: ValidationTarget = {
     'Public records revealed the ownership + use change before it appeared in trade press. ' +
     'Measure: press date − earliest ownership-change filing date = lead time in days.',
   applicant: 'Southwark Bridge Road LLP', // confirmed applicant on the Southwark planning application
+  companyNumber: 'OC455308', // confirmed — pull this directly; keyword search hit an unrelated company
+  incorporatedOn: '2025-01-28', // confirmed incorporation date
   pressBaseline: '2026-06-01', // Building magazine, June 2026 — refine to the exact issue date
+  controllersOfInterest: ['HUB', 'Bridges Fund Management'],
   companiesHouseSearch: [
-    'Southwark Bridge Road LLP', // the confirmed applicant — search this exact name first
+    'Southwark Bridge Road LLP', // fallback only — companyNumber above takes precedence
   ],
   knownEvents: [
     {
@@ -57,16 +71,21 @@ export const SOUTHWARK_BRIDGE_ROAD: ValidationTarget = {
       resolvesTo: 'planningApplication signal — pull application ref + decision date from Southwark Public Access',
     },
     {
+      what: 'Southwark Bridge Road LLP (OC455308) incorporated — the acquisition vehicle',
+      when: '2025-01-28',
+      citation: 'Companies House — confirmed company number OC455308, incorporated 2025-01-28',
+      resolvesTo: 'companiesHouseSpv signal — the driving ownership-change event (489 days before press)',
+    },
+    {
       what: 'Resubmitted under new ownership, new architect (Morris + Co), use switched to co-living',
       when: '2026-04',
-      citation: 'Building magazine, June 2026; applicant confirmed as Southwark Bridge Road LLP on the Southwark planning application',
+      citation: 'Building magazine, June 2026; applicant confirmed as Southwark Bridge Road LLP on the planning application',
       resolvesTo: 'planningApplication signal — pull resubmission ref + validation date',
     },
     {
-      what: 'Ownership-change filing of Southwark Bridge Road LLP (PSC / member change / charge)',
-      when: 'to be read from the LLP filing history',
-      citation: 'Companies House filing history for Southwark Bridge Road LLP',
-      resolvesTo: 'companiesHouseSpv/charge signal — the driver of the lead-time claim',
+      what: 'NOTE: keyword search "HUB" previously matched HUB Accountants (06407775) — an unrelated 714-day false positive, now avoided by pinning OC455308',
+      when: 'n/a',
+      citation: 'false-positive record',
     },
   ],
 }

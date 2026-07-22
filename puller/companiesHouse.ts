@@ -67,6 +67,32 @@ export function namesMatch(a?: string, b?: string): boolean {
   return Boolean(a && b) && normaliseCompanyName(a!) === normaliseCompanyName(b!)
 }
 
+/** True if `needle` appears as a contiguous run of whole tokens in `haystack`.
+ *  Token-based so "HUB" matches "HUB SBR LIMITED" but not "HUBBARD LTD". */
+export function nameContains(haystack: string, needle: string): boolean {
+  const h = normaliseCompanyName(haystack).split(' ').filter(Boolean)
+  const n = normaliseCompanyName(needle).split(' ').filter(Boolean)
+  if (n.length === 0 || n.length > h.length) return false
+  for (let i = 0; i + n.length <= h.length; i++) {
+    if (n.every((t, j) => h[i + j] === t)) return true
+  }
+  return false
+}
+
+export interface ControllerMatch {
+  needle: string
+  named: boolean
+  matchedBy: string[]
+}
+
+/** For each controller of interest, which PSC names (if any) name it. */
+export function findControllers(pscNames: string[], needles: string[]): ControllerMatch[] {
+  return needles.map((needle) => {
+    const matchedBy = pscNames.filter((name) => nameContains(name, needle))
+    return { needle, named: matchedBy.length > 0, matchedBy }
+  })
+}
+
 export function fromSearchItem(i: RawSearchItem): CompanyHit {
   return {
     company_name: i.title?.trim() || NAME_UNAVAILABLE,
@@ -178,5 +204,21 @@ export async function filingHistory(companyNumber: string): Promise<ChFiling[]> 
 /** Task 3 — charges for one company (enrichment; needs a company number first). */
 export async function companyCharges(companyNumber: string): Promise<Charge[]> {
   const data = await chGet<{ items?: Charge[] }>(`/company/${companyNumber}/charges`)
+  return data.items ?? []
+}
+
+export interface PscItem {
+  name?: string
+  kind?: string // e.g. "corporate-entity-person-with-significant-control"
+  natures_of_control?: string[]
+  notified_on?: string
+  ceased_on?: string
+}
+
+/** Persons with significant control for a company (who ultimately controls it). */
+export async function personsWithSignificantControl(companyNumber: string): Promise<PscItem[]> {
+  const data = await chGet<{ items?: PscItem[] }>(
+    `/company/${companyNumber}/persons-with-significant-control?items_per_page=100`,
+  )
   return data.items ?? []
 }

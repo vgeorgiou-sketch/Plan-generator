@@ -62,6 +62,21 @@ console.log('\nwindow + edge cases')
   assert('but is still returned as a candidate', future.candidates.length === 1)
 }
 
+console.log('\nconfirmed case: Southwark Bridge Road LLP (OC455308)')
+{
+  // The vehicle's own incorporation is necessarily its earliest possible filing,
+  // so for a fresh acquisition LLP the incorporation is the driving event.
+  assert('incorporation 2025-01-28 → press 2026-06-01 = 489 days', leadTimeDays('2025-01-28', '2026-06-01') === 489, leadTimeDays('2025-01-28', '2026-06-01'))
+
+  const llp: ChFiling[] = [
+    { category: 'incorporation', type: 'LLIN01', date: '2025-01-28', description: 'incorporation' },
+    { category: 'persons-with-significant-control', type: 'PSC01', date: '2025-02-10' },
+  ]
+  const r = summariseLeadTime(llp, '2026-06-01', 730, { isLLP: true })
+  assert('driving filing is the incorporation (2025-01-28)', r.drivingFiling?.date === '2025-01-28', r.drivingFiling)
+  assert('headline lead time = 489 days (not the 714 keyword false positive)', r.leadTimeDays === 489, r.leadTimeDays)
+}
+
 console.log('\nLLP awareness (Southwark Bridge Road LLP is a partnership)')
 {
   assert('OC number is an LLP', isLLPNumber('OC423456'))
