@@ -4,7 +4,7 @@
   filing-history fixture — no network required.
 */
 
-import { isOwnershipChange, leadTimeDays, summariseLeadTime, type ChFiling } from './leadTime.ts'
+import { isLLPNumber, isOwnershipChange, leadTimeDays, summariseLeadTime, type ChFiling } from './leadTime.ts'
 
 let failures = 0
 function assert(name: string, cond: boolean, detail?: unknown) {
@@ -60,6 +60,30 @@ console.log('\nwindow + edge cases')
   const future = summariseLeadTime([{ category: 'mortgage', date: '2026-07-01' }], '2026-06-01')
   assert('filing after press date is not the driver', future.drivingFiling === null, future)
   assert('but is still returned as a candidate', future.candidates.length === 1)
+}
+
+console.log('\nLLP awareness (Southwark Bridge Road LLP is a partnership)')
+{
+  assert('OC number is an LLP', isLLPNumber('OC423456'))
+  assert('SO number is an LLP (Scotland)', isLLPNumber('SO301234'))
+  assert('plain numeric is NOT an LLP', !isLLPNumber('06407775'))
+
+  const memberChange: ChFiling = { category: 'officers', type: 'LLAP01', date: '2024-06-17', description: 'appointment-of-a-member' }
+  assert('member change counts as ownership change FOR an LLP', isOwnershipChange(memberChange, { isLLP: true }))
+  assert('officers change does NOT count for a Ltd (director ≠ owner)', !isOwnershipChange(memberChange, { isLLP: false }))
+
+  // An LLP whose earliest in-window ownership event is a member change.
+  const llpFilings: ChFiling[] = [
+    { category: 'incorporation', date: '2008-01-01' }, // outside window
+    { category: 'officers', date: '2024-06-17', description: 'appointment-of-a-member' },
+    { category: 'persons-with-significant-control', date: '2025-02-01' },
+  ]
+  const asLlp = summariseLeadTime(llpFilings, '2026-06-01', 730, { isLLP: true })
+  assert('LLP: driving filing is the 2024-06-17 member change', asLlp.drivingFiling?.date === '2024-06-17', asLlp.drivingFiling)
+  assert('LLP: lead time = 714 days', asLlp.leadTimeDays === 714, asLlp.leadTimeDays)
+
+  const asLtd = summariseLeadTime(llpFilings, '2026-06-01', 730, { isLLP: false })
+  assert('same filings as a Ltd: member change ignored, PSC drives it (2025-02-01)', asLtd.drivingFiling?.date === '2025-02-01', asLtd.drivingFiling)
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)

@@ -57,6 +57,16 @@ export function pickCompanyName(...candidates: (string | undefined)[]): string {
   return NAME_UNAVAILABLE
 }
 
+/** Case/punctuation-insensitive company name key. Keeps the entity suffix
+ *  (LLP vs LTD are different entities), so only true same-name matches. */
+export function normaliseCompanyName(s: string): string {
+  return s.toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim()
+}
+
+export function namesMatch(a?: string, b?: string): boolean {
+  return Boolean(a && b) && normaliseCompanyName(a!) === normaliseCompanyName(b!)
+}
+
 export function fromSearchItem(i: RawSearchItem): CompanyHit {
   return {
     company_name: i.title?.trim() || NAME_UNAVAILABLE,

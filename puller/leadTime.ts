@@ -29,8 +29,22 @@ export const OWNERSHIP_CHANGE_CATEGORIES = new Set<string>([
   'change-of-name',
 ])
 
-export function isOwnershipChange(filing: ChFiling): boolean {
-  return OWNERSHIP_CHANGE_CATEGORIES.has(filing.category)
+/**
+ * For an LLP, a change of member IS a change of ownership (filed under the
+ * `officers` category). For a Ltd, an `officers` filing is a director change,
+ * which is NOT ownership — so this only counts when isLLP is set.
+ */
+const LLP_OWNERSHIP_CATEGORIES = new Set<string>(['officers'])
+
+/** LLP company numbers are prefixed OC (E&W), SO (Scotland) or NC (NI). */
+export function isLLPNumber(companyNumber: string): boolean {
+  return /^(OC|SO|NC)\d+$/i.test(companyNumber.trim())
+}
+
+export function isOwnershipChange(filing: ChFiling, opts?: { isLLP?: boolean }): boolean {
+  if (OWNERSHIP_CHANGE_CATEGORIES.has(filing.category)) return true
+  if (opts?.isLLP && LLP_OWNERSHIP_CATEGORIES.has(filing.category)) return true
+  return false
 }
 
 function toUtcDays(iso: string): number {
@@ -61,10 +75,11 @@ export function summariseLeadTime(
   filings: ChFiling[],
   pressDate: string,
   windowDays = 730,
+  opts?: { isLLP?: boolean },
 ): LeadTimeResult {
   const pressDays = toUtcDays(pressDate)
   const candidates = filings
-    .filter(isOwnershipChange)
+    .filter((f) => isOwnershipChange(f, opts))
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date))
 

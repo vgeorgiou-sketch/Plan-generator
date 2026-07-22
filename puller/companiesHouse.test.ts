@@ -4,7 +4,7 @@
   name always populated — the fix for company names showing as "undefined".
 */
 
-import { fromAdvancedItem, fromSearchItem, pickCompanyName, NAME_UNAVAILABLE } from './companiesHouse.ts'
+import { fromAdvancedItem, fromSearchItem, namesMatch, pickCompanyName, NAME_UNAVAILABLE } from './companiesHouse.ts'
 import { spvToHit } from './kineticSignals.ts'
 
 let failures = 0
@@ -70,6 +70,15 @@ console.log('\npickCompanyName — authoritative name resolution (task0)')
   assert('skips the placeholder in favour of a real later name', pickCompanyName(NAME_UNAVAILABLE, 'Real Co Ltd') === 'Real Co Ltd')
   assert('skips blank/whitespace', pickCompanyName('   ', 'Real Co Ltd') === 'Real Co Ltd')
   assert('all missing → placeholder, never the literal "undefined"', pickCompanyName(undefined, undefined, '') === NAME_UNAVAILABLE)
+}
+
+console.log('\nnamesMatch — exact applicant matching (Task 0 headline)')
+{
+  assert('same name, different case/spacing matches', namesMatch('Southwark Bridge Road LLP', 'SOUTHWARK BRIDGE ROAD  LLP'))
+  assert('punctuation ignored', namesMatch('Southwark Bridge Road LLP', 'Southwark Bridge Road, LLP'))
+  assert('different entity suffix does NOT match (LLP ≠ LTD)', !namesMatch('Southwark Bridge Road LLP', 'Southwark Bridge Road Ltd'))
+  assert('different name does not match', !namesMatch('Southwark Bridge Road LLP', 'HUB SBR Developments Ltd'))
+  assert('undefined never matches', !namesMatch(undefined, 'Southwark Bridge Road LLP'))
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)
