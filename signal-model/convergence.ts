@@ -68,6 +68,15 @@ export function computeConvergence(signals: Signal[], asOf?: string): Convergenc
   }
 }
 
+/** All signals for a layer, oldest first — the sequence, not a summary.
+ *  A layer can hold several distinct dated events (e.g. two PSC changes);
+ *  they must never be flattened into one, because the sequence is the insight. */
+export function orderedSignals(opportunity: Opportunity, layer: SignalLayer): Signal[] {
+  return opportunity.signals
+    .filter((s) => s.layer === layer)
+    .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
+}
+
 /** The strongest signal for a layer (filed beats derived beats inferred). */
 function bestSignalForLayer(signals: Signal[], layer: SignalLayer): Signal | undefined {
   return signals
@@ -83,19 +92,31 @@ function shortDate(iso: string): string {
 /**
  * One row of grid cells for a building, in canonical layer order.
  * Empty layers stay visibly empty — a sparse grid on real data is correct.
+ *
+ * A cell summarises a layer's provenance for the matrix view, but it never
+ * *merges* distinct events: when a layer holds more than one signal the
+ * tooltip says so and the count is exposed, so the UI can expand the cell
+ * into the full dated sequence (see `orderedSignals`) rather than collapsing
+ * two PSC events into a single "ownership signal".
  */
 export function deriveGridCells(opportunity: Opportunity): GridCell[] {
   return SIGNAL_LAYERS.map((layer) => {
-    const sig = bestSignalForLayer(opportunity.signals, layer)
-    if (!sig) {
+    const all = orderedSignals(opportunity, layer)
+    if (all.length === 0) {
       return { buildingId: opportunity.id, layer, state: 'empty', tooltip: `${LAYER_LABEL[layer]}: no record` }
     }
+    const strongest = bestSignalForLayer(opportunity.signals, layer)!
+    const multi = all.length > 1
+    const tooltip = multi
+      ? `${LAYER_LABEL[layer]}: ${all.length} events — ${all.map((s) => shortDate(s.observedAt)).join(' → ')}`
+      : `${strongest.label} · ${shortDate(strongest.observedAt)}`
     return {
       buildingId: opportunity.id,
       layer,
-      state: sig.factType,
-      signalId: sig.id,
-      tooltip: `${sig.label} · ${shortDate(sig.observedAt)}`,
+      state: strongest.factType,
+      signalId: strongest.id,
+      tooltip,
+      ...(multi ? { count: all.length } : {}),
     }
   })
 }

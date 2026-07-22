@@ -8,7 +8,8 @@
   (Southwark Bridge Road) lives in ./targets.ts with cited sources.
 */
 
-import { computeConvergence, deriveGridCells } from './convergence.ts'
+import { computeConvergence, deriveGridCells, convergenceOf, orderedSignals } from './convergence.ts'
+import { SBR_PRESS_BASELINE, SOUTHWARK_BRIDGE_ROAD_SEED as SEED } from './seed.ts'
 import type { Opportunity, Signal } from './types.ts'
 
 let failures = 0
@@ -125,12 +126,35 @@ console.log('\ngrid cells')
   }
   const cells = deriveGridCells(opp)
   const byLayer = Object.fromEntries(cells.map((c) => [c.layer, c]))
-  assert('9 cells, one per layer', cells.length === 9, cells.length)
+  assert('one cell per layer', cells.length === 11, cells.length)
   assert('epc cell is filed', byLayer.epc.state === 'filed')
   assert('empty layer (voa) renders empty', byLayer.voa.state === 'empty')
   assert('empty cell has no signalId', byLayer.voa.signalId === undefined)
   assert('strongest fact wins for a layer (filed over inferred)', byLayer.companiesHouseSpv.state === 'filed', byLayer.companiesHouseSpv)
   assert('winning cell links its signal', byLayer.companiesHouseSpv.signalId === 's-spv-strong')
+}
+
+console.log('\nconfirmed seed — 38–48 Southwark Bridge Road (real, not mocked)')
+{
+  // Section 6: kinetic-only until EPC/VOA (pressure) is pulled against it.
+  const c = convergenceOf(SEED, SBR_PRESS_BASELINE)
+  assert('seed has no pressure layer yet (EPC/VOA not pulled)', c.pressureLayers === 0, c)
+  assert('seed has 3 distinct kinetic layers (SPV + PSC + charge)', c.kineticLayers === 3, c.kineticLayers)
+  assert('seed is NOT converged yet — honest, not forced', c.isConverged === false, c)
+  assert('lead time 489 days: incorporation → press', c.leadTimeDays === 489, c.leadTimeDays)
+  assert('minConfidence 1.0 — every seed fact is filed', c.minConfidence === 1)
+
+  // The two PSC events must stay distinct, dated, and ordered — never merged.
+  const psc = orderedSignals(SEED, 'companiesHousePsc')
+  assert('two distinct PSC events preserved', psc.length === 2, psc.length)
+  assert('PSC sequence ordered: HUB ceased (18 Mar) before Bridges active (24 Mar)', psc[0].observedAt === '2025-03-18' && psc[1].observedAt === '2025-03-24', psc.map((s) => s.observedAt))
+
+  // The grid cell flags the multiplicity rather than collapsing it.
+  const cells = deriveGridCells(SEED)
+  const pscCell = cells.find((c) => c.layer === 'companiesHousePsc')!
+  assert('PSC grid cell reports 2 events, not 1', pscCell.count === 2, pscCell)
+  assert('applicant (context) present and filed', cells.find((c) => c.layer === 'planningApplicant')?.state === 'filed')
+  assert('EPC cell renders empty (sparse is correct)', cells.find((c) => c.layer === 'epc')?.state === 'empty')
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)

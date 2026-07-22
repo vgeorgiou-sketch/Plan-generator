@@ -18,7 +18,9 @@ export type SignalLayer =
   | 'landRegistryOwnership' // Corporate ownership bulk dataset
   | 'companiesHouseSpv' // New incorporation matching address/name
   | 'companiesHouseCharge' // Mortgage/debenture filed or satisfied
+  | 'companiesHousePsc' // Persons-with-significant-control event: appointment, ceased, nature-of-control change
   | 'planningApplication' // Planning London Datahub / Southwark Public Access
+  | 'planningApplicant' // Applicant/agent name confirmed from a live application — the anchor for all CH lookups
   | 'buildingControlDemolition' // S80/81 demolition notice
   | 'pressReport' // Trade press (Building, EGi, etc.) — always lowest trust
 
@@ -30,7 +32,9 @@ export const SIGNAL_LAYERS: SignalLayer[] = [
   'landRegistryOwnership',
   'companiesHouseSpv',
   'companiesHouseCharge',
+  'companiesHousePsc',
   'planningApplication',
+  'planningApplicant',
   'buildingControlDemolition',
   'pressReport',
 ]
@@ -42,7 +46,9 @@ export const LAYER_LABEL: Record<SignalLayer, string> = {
   landRegistryOwnership: 'Corp. ownership',
   companiesHouseSpv: 'New SPV',
   companiesHouseCharge: 'Charge',
+  companiesHousePsc: 'PSC / control',
   planningApplication: 'Planning',
+  planningApplicant: 'Applicant',
   buildingControlDemolition: 'Demolition',
   pressReport: 'Press',
 }
@@ -89,7 +95,9 @@ export const LAYER_CATEGORY: Record<SignalLayer, LayerCategory> = {
   landRegistryOwnership: 'context',
   companiesHouseSpv: 'kinetic',
   companiesHouseCharge: 'kinetic',
+  companiesHousePsc: 'kinetic', // control changes are as kinetic as a charge or incorporation
   planningApplication: 'kinetic',
+  planningApplicant: 'context', // the anchor fact, not a leading indicator — it's how you got here
   buildingControlDemolition: 'kinetic',
   pressReport: 'context', // informative but never counts toward convergence — it's already public
 }
@@ -108,8 +116,11 @@ export interface GridCell {
   buildingId: string
   layer: SignalLayer
   state: GridCellState // drives cell styling
-  signalId?: string // FK to the Signal, for the click-through
+  signalId?: string // FK to the strongest Signal, for the click-through
   tooltip: string // short human summary, e.g. "Charge registered 03/2026"
+  /** Present when a layer holds >1 distinct event — the UI expands into the
+   *  full dated sequence rather than merging them. See orderedSignals(). */
+  count?: number
 }
 
 export interface ConfirmationEntry {

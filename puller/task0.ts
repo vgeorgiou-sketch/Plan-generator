@@ -110,29 +110,45 @@ async function reportPsc(number: string): Promise<void> {
   }
 }
 
-/** Fallback path when no company number is pinned — keyword search. */
+/*
+  Standing rule (spike lesson #1, enforced here, not just documented):
+  NEVER accept a keyword search hit as the answer. Keyword search on a brand /
+  operator / fund name produces false positives — the first run returned
+  "HUB Accountants Ltd" as top hit purely for matching "hub". The keyword path
+  is allowed ONLY to locate a company whose registered name EXACTLY matches a
+  name already confirmed from an authoritative source (the planning applicant),
+  and it refuses to emit a headline otherwise.
+*/
 async function analyseBySearch(): Promise<void> {
+  if (!T.applicant) {
+    console.log(
+      'Refusing to run a keyword search with no confirmed anchor.\n' +
+        'Set `applicant` (from the planning application) or `companyNumber` on the target first —\n' +
+        'an unanchored keyword search produces false positives (e.g. "HUB Accountants").',
+    )
+    return
+  }
+
   const seen = new Map<string, string>()
   for (const term of T.companiesHouseSearch) {
     const hits = await searchCompanies(term)
     for (const h of hits) seen.set(h.company_number, h.company_name)
     console.log(`  search "${term}" → ${hits.length} companies`)
   }
-  if (seen.size === 0) {
-    console.log('\nNo candidate companies found. Check the exact registered name on Companies House.')
-    return
-  }
-  // Prefer an exact applicant-name match if the target names one.
+
+  // Accept ONLY an exact match to the confirmed applicant name.
   for (const [number, searchName] of seen) {
     const name = await resolveName(number, searchName)
-    if (T.applicant && namesMatch(name, T.applicant)) {
+    if (namesMatch(name, T.applicant)) {
+      console.log(`  anchored match: "${name}" == confirmed applicant "${T.applicant}"`)
       await analyseCompany(number)
       return
     }
   }
   console.log(
-    `\nApplicant "${T.applicant ?? '(unset)'}" not found among search results.\n` +
-      `Confirm the exact number on Companies House and set companyNumber in the target.`,
+    `\nNo registered name exactly matches the confirmed applicant "${T.applicant}".\n` +
+      `Keyword hits are NOT accepted as a fallback — confirm the exact number on Companies House\n` +
+      `and set companyNumber on the target.`,
   )
 }
 
