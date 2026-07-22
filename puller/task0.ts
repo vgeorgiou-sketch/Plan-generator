@@ -8,9 +8,20 @@
   lead time is worse than no answer.
 */
 
-import { filingHistory, searchCompanies } from './companiesHouse.ts'
+import { companyProfile, filingHistory, pickCompanyName, searchCompanies, NAME_UNAVAILABLE } from './companiesHouse.ts'
 import { summariseLeadTime } from './leadTime.ts'
 import { SOUTHWARK_BRIDGE_ROAD as T } from '../signal-model/targets.ts'
+
+/** Authoritative name from the company profile, falling back to the search name. */
+async function resolveName(number: string, searchName?: string): Promise<string> {
+  const fromSearch = searchName?.trim()
+  if (fromSearch && fromSearch !== NAME_UNAVAILABLE) return fromSearch
+  try {
+    return pickCompanyName((await companyProfile(number)).company_name, searchName)
+  } catch {
+    return pickCompanyName(searchName)
+  }
+}
 
 async function main() {
   console.log(`Task 0 — ${T.address}, ${T.borough}`)
@@ -34,12 +45,13 @@ async function main() {
     const filings = await filingHistory(number)
     const summary = summariseLeadTime(filings, T.pressBaseline)
     if (summary.drivingFiling && summary.leadTimeDays !== null) {
+      const company = await resolveName(number, name)
       console.log(
-        `  ${name} (${number}): ownership-change filing ${summary.drivingFiling.date} ` +
+        `  ${company} (${number}): ownership-change filing ${summary.drivingFiling.date} ` +
           `(${summary.drivingFiling.category}) → ${summary.leadTimeDays} days before press`,
       )
       if (!best || summary.leadTimeDays > best.leadTimeDays) {
-        best = { company: name, number, leadTimeDays: summary.leadTimeDays, filingDate: summary.drivingFiling.date }
+        best = { company, number, leadTimeDays: summary.leadTimeDays, filingDate: summary.drivingFiling.date }
       }
     }
   }

@@ -46,7 +46,16 @@ interface RawAdvancedItem {
   registered_office_address?: Record<string, string>
 }
 
-const NAME_UNAVAILABLE = '(name unavailable)'
+export const NAME_UNAVAILABLE = '(name unavailable)'
+
+/** First real name among the candidates; placeholders and blanks are skipped. */
+export function pickCompanyName(...candidates: (string | undefined)[]): string {
+  for (const c of candidates) {
+    const t = c?.trim()
+    if (t && t !== NAME_UNAVAILABLE) return t
+  }
+  return NAME_UNAVAILABLE
+}
 
 export function fromSearchItem(i: RawSearchItem): CompanyHit {
   return {
@@ -135,6 +144,19 @@ export async function searchCompanies(query: string, itemsPerPage = 20): Promise
   const q = new URLSearchParams({ q: query, items_per_page: String(itemsPerPage) })
   const data = await chGet<{ items?: RawSearchItem[] }>(`/search/companies?${q}`)
   return (data.items ?? []).map(fromSearchItem)
+}
+
+export interface CompanyProfile {
+  company_name?: string
+  company_number: string
+  company_status?: string
+  date_of_creation?: string
+  registered_office_address?: Record<string, string>
+}
+
+/** Authoritative company record — the reliable source of the registered name. */
+export async function companyProfile(companyNumber: string): Promise<CompanyProfile> {
+  return chGet<CompanyProfile>(`/company/${companyNumber}`)
 }
 
 /** Task 0, step 2 — filing history for one company. */

@@ -4,7 +4,7 @@
   name always populated — the fix for company names showing as "undefined".
 */
 
-import { fromAdvancedItem, fromSearchItem } from './companiesHouse.ts'
+import { fromAdvancedItem, fromSearchItem, pickCompanyName, NAME_UNAVAILABLE } from './companiesHouse.ts'
 import { spvToHit } from './kineticSignals.ts'
 
 let failures = 0
@@ -61,6 +61,15 @@ console.log('\ndownstream: SPV signal label now shows the entity')
   const kinetic = spvToHit(hit)
   assert('SPV signal label names the company', kinetic.signal.label === 'New SPV: SBR PROPCO LIMITED', kinetic.signal.label)
   assert('SPV hit address falls back to snippet when structured is absent', kinetic.address.includes('Southwark Bridge Road'), kinetic.address)
+}
+
+console.log('\npickCompanyName — authoritative name resolution (task0)')
+{
+  assert('prefers the first real name', pickCompanyName('SBR PROPCO LIMITED', 'other') === 'SBR PROPCO LIMITED')
+  assert('skips undefined, uses the profile name', pickCompanyName(undefined, 'HUB SBR DEVELOPMENTS LTD') === 'HUB SBR DEVELOPMENTS LTD')
+  assert('skips the placeholder in favour of a real later name', pickCompanyName(NAME_UNAVAILABLE, 'Real Co Ltd') === 'Real Co Ltd')
+  assert('skips blank/whitespace', pickCompanyName('   ', 'Real Co Ltd') === 'Real Co Ltd')
+  assert('all missing → placeholder, never the literal "undefined"', pickCompanyName(undefined, undefined, '') === NAME_UNAVAILABLE)
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)
