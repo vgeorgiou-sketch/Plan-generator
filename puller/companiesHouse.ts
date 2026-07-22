@@ -14,11 +14,57 @@ const HOST = 'api.company-information.service.gov.uk'
 const BASE = `https://${HOST}`
 const CRED_HINT = 'Use a REST API key from an application at developer.company-information.service.gov.uk (set CH_API_KEY).'
 
+/** Normalised company hit — the shape the rest of the puller consumes. */
 export interface CompanyHit {
   company_name: string
   company_number: string
   date_of_creation?: string
   registered_office_address?: Record<string, string>
+  address_snippet?: string
+}
+
+/*
+  The two search endpoints return DIFFERENT shapes, which is what produced the
+  "undefined" company names:
+    /search/companies          → item.title           (+ address, address_snippet)
+    /advanced-search/companies → item.company_name     (+ registered_office_address)
+  These mappers normalise both into CompanyHit so a name is always present.
+*/
+
+interface RawSearchItem {
+  title?: string
+  company_number: string
+  date_of_creation?: string
+  address_snippet?: string
+  address?: Record<string, string>
+}
+
+interface RawAdvancedItem {
+  company_name?: string
+  company_number: string
+  date_of_creation?: string
+  registered_office_address?: Record<string, string>
+}
+
+const NAME_UNAVAILABLE = '(name unavailable)'
+
+export function fromSearchItem(i: RawSearchItem): CompanyHit {
+  return {
+    company_name: i.title?.trim() || NAME_UNAVAILABLE,
+    company_number: i.company_number,
+    date_of_creation: i.date_of_creation,
+    registered_office_address: i.address,
+    address_snippet: i.address_snippet,
+  }
+}
+
+export function fromAdvancedItem(i: RawAdvancedItem): CompanyHit {
+  return {
+    company_name: i.company_name?.trim() || NAME_UNAVAILABLE,
+    company_number: i.company_number,
+    date_of_creation: i.date_of_creation,
+    registered_office_address: i.registered_office_address,
+  }
 }
 
 export interface Charge {
@@ -80,15 +126,15 @@ export async function advancedSearch(params: {
   if (params.incorporatedTo) q.set('incorporated_to', params.incorporatedTo)
   q.set('company_status', params.companyStatus ?? 'active')
   q.set('size', String(params.size ?? 100))
-  const data = await chGet<{ items?: CompanyHit[] }>(`/advanced-search/companies?${q}`)
-  return data.items ?? []
+  const data = await chGet<{ items?: RawAdvancedItem[] }>(`/advanced-search/companies?${q}`)
+  return (data.items ?? []).map(fromAdvancedItem)
 }
 
 /** General company name/address search (Task 0, step 1). */
 export async function searchCompanies(query: string, itemsPerPage = 20): Promise<CompanyHit[]> {
   const q = new URLSearchParams({ q: query, items_per_page: String(itemsPerPage) })
-  const data = await chGet<{ items?: CompanyHit[] }>(`/search/companies?${q}`)
-  return data.items ?? []
+  const data = await chGet<{ items?: RawSearchItem[] }>(`/search/companies?${q}`)
+  return (data.items ?? []).map(fromSearchItem)
 }
 
 /** Task 0, step 2 — filing history for one company. */

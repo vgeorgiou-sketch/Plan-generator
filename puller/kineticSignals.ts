@@ -22,7 +22,7 @@ function addressString(a?: Record<string, string>): string {
  * confidence ≤ 0.5 until a human confirms (per the data model).
  */
 export function spvToHit(hit: CompanyHit): KineticHit {
-  const address = addressString(hit.registered_office_address)
+  const address = addressString(hit.registered_office_address) || hit.address_snippet || ''
   const signal: Signal = {
     id: `spv-${hit.company_number}`,
     buildingId: '',
