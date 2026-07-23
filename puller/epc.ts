@@ -73,6 +73,30 @@ export function normaliseEpcRow(row: EpcRow, borough: string): UniverseRecord | 
   return { id, address, postcode, borough, floorArea, pressureSignal }
 }
 
+/** A filed `epc` PRESSURE signal for a specific building id (e.g. the seed).
+ *  Unlike normaliseEpcRow (which mints its own building), this attaches the
+ *  EPC fact to an existing Opportunity so it becomes that card's pressure layer. */
+export function epcSignalForBuilding(row: EpcRow, buildingId: string): Signal {
+  const band = row['asset-rating-band'] ?? row['asset-rating'] ?? '?'
+  const observedAt = (row['lodgement-date'] ?? '').slice(0, 10) || '1970-01-01'
+  const ref = row['building-reference-number'] ?? row['lmk-key'] ?? ''
+  return {
+    id: `epc-${buildingId}`,
+    buildingId,
+    layer: 'epc',
+    factType: 'filed',
+    label: `EPC rating: ${band}`,
+    value: band,
+    sourceUrl: row['lmk-key']
+      ? `https://find-energy-certificate.service.gov.uk/energy-certificate/${row['lmk-key']}`
+      : 'https://find-energy-certificate.service.gov.uk/',
+    sourceRef: ref || undefined,
+    observedAt,
+    retrievedAt: new Date().toISOString().slice(0, 10),
+    confidence: 1,
+  }
+}
+
 /** Is this a large office/commercial building worth watching? */
 export function isLargeCommercial(row: EpcRow, minFloorArea = 1000): boolean {
   const area = row['total-floor-area'] ? Number(row['total-floor-area']) : 0

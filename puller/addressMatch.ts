@@ -12,7 +12,8 @@ const UK_POSTCODE = /([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})/i
 
 export interface ParsedAddress {
   raw: string
-  postcode?: string // normalised "OUT IN"
+  postcode?: string // normalised full "OUT IN" when present
+  district?: string // outward code only, e.g. "SE1" — present even for district-level addresses
   buildingNumber?: string // leading street number, e.g. "38" or "38-48"
   tokens: string[] // significant words, upper-cased, de-noised
 }
@@ -22,6 +23,9 @@ const NOISE = new Set([
   'HOUSE', 'BUILDING', 'LONDON', 'STREET', 'ST', 'ROAD', 'RD', 'LANE',
   'AVENUE', 'AVE', 'SUITE', 'C/O',
 ])
+
+/** A bare outward code (district) like SE1, EC4V — the first half of a postcode. */
+const OUTWARD_CODE = /^[A-Z]{1,2}\d[A-Z\d]?$/
 
 export function parseAddress(raw: string): ParsedAddress {
   const upper = raw.toUpperCase()
@@ -33,12 +37,20 @@ export function parseAddress(raw: string): ParsedAddress {
   const buildingNumber = numMatch ? numMatch[1].replace(/\s*[-–]\s*/, '-') : undefined
 
   const withoutPc = postcode ? upper.replace(UK_POSTCODE, ' ') : upper
-  const tokens = withoutPc
+  const rawTokens = withoutPc
     .replace(/[^A-Z0-9 ]/g, ' ')
     .split(/\s+/)
-    .filter((t) => t.length > 1 && !NOISE.has(t) && !/^\d+$/.test(t))
+    .filter(Boolean)
 
-  return { raw, postcode, buildingNumber, tokens }
+  // district = outward code. From a full postcode when present, else a bare
+  // outward token (a district-only address like "…Southwark Bridge Road SE1").
+  const district = postcode ? postcode.split(' ')[0] : rawTokens.find((t) => OUTWARD_CODE.test(t))
+
+  const tokens = rawTokens.filter(
+    (t) => t.length > 1 && !NOISE.has(t) && !/^\d+$/.test(t) && t !== district,
+  )
+
+  return { raw, postcode, district, buildingNumber, tokens }
 }
 
 function tokenOverlap(a: string[], b: string[]): number {
@@ -56,28 +68,33 @@ export interface MatchResult {
 
 /**
  * Score how likely two address strings refer to the same building.
- * Different known postcodes are a hard zero — never merge across postcodes.
+ * Conflicting full postcodes — or conflicting districts — are a hard zero;
+ * never merge across areas. A full-postcode match scores higher than a
+ * district-only match, but a district match still lets a confident
+ * number + street match clear threshold (needed when one side has only a
+ * district, e.g. an EPC row vs a district-level seed address).
  */
 export function matchAddress(a: string, b: string): MatchResult {
   const pa = parseAddress(a)
   const pb = parseAddress(b)
 
-  if (pa.postcode && pb.postcode && pa.postcode !== pb.postcode) {
-    return { score: 0, exact: false }
-  }
+  if (pa.postcode && pb.postcode && pa.postcode !== pb.postcode) return { score: 0, exact: false }
+  if (pa.district && pb.district && pa.district !== pb.district) return { score: 0, exact: false }
 
   let score = 0
-  const samePostcode = pa.postcode && pb.postcode && pa.postcode === pb.postcode
-  if (samePostcode) score += 0.6
+  const fullPostcodeMatch = Boolean(pa.postcode && pb.postcode && pa.postcode === pb.postcode)
+  const districtMatch = Boolean(pa.district && pb.district && pa.district === pb.district)
+  if (fullPostcodeMatch) score += 0.6
+  else if (districtMatch) score += 0.45
 
-  const numsAgree =
-    pa.buildingNumber !== undefined && pa.buildingNumber === pb.buildingNumber
+  const numsAgree = pa.buildingNumber !== undefined && pa.buildingNumber === pb.buildingNumber
   if (numsAgree) score += 0.25
 
   score += 0.4 * tokenOverlap(pa.tokens, pb.tokens)
 
   score = Math.min(1, score)
-  return { score, exact: Boolean(samePostcode && numsAgree) }
+  // "exact" (safe to treat as filed) still requires a FULL postcode + number.
+  return { score, exact: Boolean(fullPostcodeMatch && numsAgree) }
 }
 
 /** Best match for `needle` among `haystack`, above `threshold` (default 0.7). */
