@@ -15,7 +15,8 @@ import { describeHttpFailure, describeNetworkThrow, isEgressProxied } from './ht
 
 const HOST = 'epc.opendatacommunities.org'
 const BASE = `https://${HOST}/api/v1/non-domestic/search`
-const CRED_HINT = 'Register free at epc.opendatacommunities.org and set EPC_EMAIL and EPC_API_KEY.'
+const CRED_HINT =
+  'Set EPC_API_KEY to the pre-encoded token from epc.opendatacommunities.org (sent as `Authorization: Basic <token>`).'
 
 export interface EpcRow {
   'lmk-key'?: string
@@ -30,15 +31,17 @@ export interface EpcRow {
 }
 
 function authHeader(): string {
-  const email = process.env.EPC_EMAIL
-  const key = process.env.EPC_API_KEY
-  if (!email || !key) {
+  // EPC calls it a "Bearer token" but it is used as Authorization: Basic
+  // <token> — the token is already pre-encoded, so we send it verbatim (not
+  // Bearer, and NOT a Basic header built from a separate email:key pair).
+  const token = process.env.EPC_API_KEY
+  if (!token) {
     throw new Error(
-      'EPC_EMAIL and EPC_API_KEY must be set. Register free at ' +
-        'https://epc.opendatacommunities.org/ and export both before running.',
+      'EPC_API_KEY must be set to the pre-encoded EPC token from ' +
+        'https://epc.opendatacommunities.org/ (sent as `Authorization: Basic <token>`).',
     )
   }
-  return 'Basic ' + Buffer.from(`${email}:${key}`).toString('base64')
+  return 'Basic ' + token
 }
 
 /** One EPC certificate → a UniverseRecord carrying a filed `epc` pressure signal. */
