@@ -1,0 +1,377 @@
+/*
+  Signal grid — provenance view. Real, cited data only.
+  Empty cells are genuinely empty: a faint dotted outline, no fill, no badge,
+  no "coming soon". Sparse is correct and must look sparse.
+*/
+.sg-root {
+  --page: #f4f4f1;
+  --card: #fcfcfb;
+  --ink: #151513;
+  --ink2: #55534c;
+  --ink3: #8b897f;
+  --hair: #e4e3dc;
+  --hair2: #d3d1c8;
+  --kinetic: #2a78d6;
+  --pressure: #5b7a8c;
+  --context: #8b897f;
+  --kinetic-wash: rgba(42, 120, 214, 0.1);
+  --pressure-wash: rgba(91, 122, 140, 0.12);
+  --context-wash: rgba(139, 137, 127, 0.12);
+
+  min-height: 100vh;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 'Geist Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sg-root {
+    --page: #0d0d0c;
+    --card: #191917;
+    --ink: #f4f3ee;
+    --ink2: #c3c2b7;
+    --ink3: #8f8d84;
+    --hair: #2b2b28;
+    --hair2: #3a3a37;
+    --kinetic: #3987e5;
+    --pressure: #7ea0b3;
+    --context: #a3a196;
+    --kinetic-wash: rgba(57, 135, 229, 0.16);
+    --pressure-wash: rgba(126, 160, 179, 0.16);
+    --context-wash: rgba(163, 161, 150, 0.14);
+  }
+}
+:root[data-theme='dark'] .sg-root {
+  --page: #0d0d0c;
+  --card: #191917;
+  --ink: #f4f3ee;
+  --ink2: #c3c2b7;
+  --ink3: #8f8d84;
+  --hair: #2b2b28;
+  --hair2: #3a3a37;
+  --kinetic: #3987e5;
+  --pressure: #7ea0b3;
+  --context: #a3a196;
+  --kinetic-wash: rgba(57, 135, 229, 0.16);
+  --pressure-wash: rgba(126, 160, 179, 0.16);
+  --context-wash: rgba(163, 161, 150, 0.14);
+}
+:root[data-theme='light'] .sg-root {
+  --page: #f4f4f1;
+  --card: #fcfcfb;
+  --ink: #151513;
+  --ink2: #55534c;
+  --ink3: #8b897f;
+  --hair: #e4e3dc;
+  --hair2: #d3d1c8;
+  --kinetic: #2a78d6;
+  --pressure: #5b7a8c;
+  --context: #8b897f;
+}
+
+.sg-root * {
+  box-sizing: border-box;
+}
+.sg-wrap {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+.sg-top h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.sg-top .sg-sub {
+  color: var(--ink3);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
+.sg-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 16px 0 22px;
+  font-size: 11.5px;
+  color: var(--ink2);
+}
+.sg-legend .k {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sg-cdot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.sg-sw {
+  width: 22px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+  border: 1px solid var(--hair2);
+}
+.sg-sw.filed {
+  background: var(--ink);
+}
+.sg-sw.derived {
+  background: repeating-linear-gradient(45deg, var(--ink3), var(--ink3) 2px, transparent 2px, transparent 5px);
+}
+.sg-sw.inferred {
+  background: transparent;
+  border: 1.5px solid var(--ink3);
+}
+.sg-sw.empty {
+  background: transparent;
+  border: 1px dotted var(--hair2);
+}
+
+/* ── matrix ── */
+.sg-matrixwrap {
+  overflow-x: auto;
+}
+.sg-matrix {
+  display: grid;
+  gap: 4px;
+  min-width: 880px;
+  margin-bottom: 26px;
+}
+.sg-matrix .hcell {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink3);
+  padding: 2px 4px;
+  align-self: end;
+  text-align: center;
+}
+.sg-matrix .rowlabel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  background: var(--card);
+  cursor: pointer;
+}
+.sg-matrix .rowlabel.sel {
+  border-color: var(--ink);
+}
+.sg-matrix .rowlabel b {
+  font-size: 13px;
+  font-weight: 600;
+}
+.sg-matrix .rowlabel span {
+  font-size: 11px;
+  color: var(--ink3);
+}
+.sg-cell {
+  position: relative;
+  min-height: 46px;
+  border-radius: 6px;
+  display: flex;
+  align-items: flex-end;
+  padding: 5px;
+  text-decoration: none;
+  overflow: hidden;
+}
+.sg-cell .mk {
+  font-size: 11px;
+  line-height: 1;
+}
+.sg-cell .ct {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--card);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  min-width: 15px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cat-kinetic {
+  color: var(--kinetic);
+}
+.cat-pressure {
+  color: var(--pressure);
+}
+.cat-context {
+  color: var(--context);
+}
+/* factType = fill treatment */
+.sg-cell.st-filed {
+  background: var(--kinetic);
+  border: 1px solid var(--kinetic);
+}
+.sg-cell.cat-pressure.st-filed {
+  background: var(--pressure);
+  border-color: var(--pressure);
+}
+.sg-cell.cat-context.st-filed {
+  background: var(--context);
+  border-color: var(--context);
+}
+.sg-cell.st-filed .mk {
+  color: #fff;
+}
+.sg-cell.st-derived {
+  background: var(--kinetic-wash);
+  border: 1px dashed currentColor;
+}
+.sg-cell.cat-pressure.st-derived {
+  background: var(--pressure-wash);
+}
+.sg-cell.cat-context.st-derived {
+  background: var(--context-wash);
+}
+.sg-cell.st-inferred {
+  background: transparent;
+  border: 1.5px solid currentColor;
+}
+/* genuinely empty — no fill, no badge, no "coming soon" */
+.sg-cell.st-empty {
+  background: transparent;
+  border: 1px dotted var(--hair2);
+  pointer-events: none;
+}
+
+/* ── building card ── */
+.sg-card {
+  background: var(--card);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  padding: 18px 20px;
+}
+.sg-card h2 {
+  margin: 0;
+  font-size: 16.5px;
+  font-weight: 600;
+}
+.sg-card .addr {
+  color: var(--ink3);
+  font-size: 12.5px;
+  margin: 2px 0 0;
+}
+.sg-conv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+.sg-chip {
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--hair2);
+  color: var(--ink2);
+  white-space: nowrap;
+}
+.sg-chip em {
+  font-style: normal;
+  color: var(--ink3);
+}
+.sg-chip.on {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+}
+.sg-chip.off {
+  border-style: dashed;
+}
+.sg-chip.lead {
+  border-color: var(--kinetic);
+  color: var(--ink);
+}
+.sg-honest {
+  font-size: 12px;
+  color: var(--ink3);
+  margin: 6px 0 16px;
+}
+.sg-card h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink2);
+  margin: 18px 0 8px;
+}
+.sg-evlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sg-ev {
+  display: grid;
+  grid-template-columns: 66px 16px 1fr;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hair);
+}
+.sg-ev:last-child {
+  border-bottom: 0;
+}
+.sg-ev-date {
+  font-size: 12px;
+  color: var(--ink3);
+  font-variant-numeric: tabular-nums;
+}
+.sg-ev-mark {
+  font-size: 12px;
+}
+.sg-ev-layer {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink3);
+  margin-right: 8px;
+}
+.sg-ev-label {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--hair2);
+}
+.sg-ev-label:hover {
+  border-color: var(--ink);
+}
+.sg-todo {
+  font-size: 10px;
+  color: var(--ink3);
+  border: 1px dashed var(--hair2);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+}
+.sg-note {
+  font-size: 11.5px;
+  color: var(--ink2);
+  margin-top: 3px;
+}
+.sg-seq {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--ink2);
+  border-left: 3px solid var(--kinetic);
+  padding: 8px 12px;
+  background: var(--kinetic-wash);
+  border-radius: 0 6px 6px 0;
+}
+.sg-seq strong {
+  color: var(--ink);
+}
+.sg-foot {
+  margin-top: 22px;
+  font-size: 11.5px;
+  color: var(--ink3);
+}

@@ -1,3 +1,11 @@
+# Plan generator
+
+> **This branch:** the app entry currently renders **Opportunity Radar**, a
+> work-winning opportunity intelligence dashboard for an architecture
+> practice — see [OPPORTUNITY_RADAR.md](OPPORTUNITY_RADAR.md) and
+> `src/radar/`. The floorplate tool below remains in `src/` (swap the import
+> in `src/main.tsx` to restore it).
+
 # Floorplate — core comparison tool
 
 A client-facing tool for comparing vertical-circulation core options against a
