@@ -2,8 +2,8 @@
   The full spike, Tasks 1→5. Run where egress + keys exist:
 
     export CH_API_KEY=…            # https://developer.company-information.service.gov.uk/
-    export EPC_EMAIL=…  EPC_API_KEY=…   # https://epc.opendatacommunities.org/
-    node --experimental-strip-types puller/run.ts
+    export EPC_API_KEY=…           # https://get-energy-performance-data.communities.gov.uk/
+    node --env-file=.env --experimental-strip-types puller/run.ts
 
   Deliverable: a plain list of CONVERGED Southwark buildings (a pressure layer
   confirmed by a kinetic layer) with their evidence — plus the Task 0 lead-time
@@ -11,7 +11,7 @@
   source is unreachable.
 */
 
-import { epcSearch, isLargeCommercial, normaliseEpcRow } from './epc.ts'
+import { epcByCouncil, isLargeCommercial, normaliseEpcRow } from './epc.ts'
 import { scanNewSpvs, SOUTHWARK_DISTRICTS } from './spvScan.ts'
 import { fetchWeeklyListHtml, parseWeeklyList, demolitionRows, demolitionToHit } from './southwarkDemolition.ts'
 import { assemble, convergedOnly, type KineticHit, type UniverseRecord } from './crossReference.ts'
@@ -21,17 +21,15 @@ async function main() {
   const asOf = new Date().toISOString().slice(0, 10)
   console.log(`Southwark convergence spike · ${asOf}\n`)
 
-  // Task 1 — pressure universe (EPC).
+  // Task 1 — pressure universe (EPC), swept by council NAME on the new service.
   const universe: UniverseRecord[] = []
-  for (const district of SOUTHWARK_DISTRICTS) {
-    const rows = await epcSearch(district)
-    for (const row of rows) {
-      if (!isLargeCommercial(row)) continue
-      const rec = normaliseEpcRow(row, 'Southwark')
-      if (rec) universe.push(rec)
-    }
-    console.log(`  EPC ${district}: ${rows.length} certs → running universe ${universe.length}`)
+  const epcRows = await epcByCouncil('Southwark')
+  for (const row of epcRows) {
+    if (!isLargeCommercial(row)) continue
+    const rec = normaliseEpcRow(row, 'Southwark')
+    if (rec) universe.push(rec)
   }
+  console.log(`  EPC council[]=Southwark: ${epcRows.length} certs → universe ${universe.length}`)
   if (universe.length === 0) {
     console.log('\nEmpty universe — no large commercial EPCs found. Check the query/filters.')
     return
