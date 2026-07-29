@@ -14,9 +14,8 @@
   prints nothing fabricated.
 */
 
-import { epcSearch, epcSignalForBuilding, isLargeCommercial, type EpcRow } from './epc.ts'
+import { epcByLocalAuthority, epcSignalForBuilding, isLargeCommercial, SOUTHWARK_ONS, type EpcRow } from './epc.ts'
 import { matchAddress } from './addressMatch.ts'
-import { SOUTHWARK_DISTRICTS } from './spvScan.ts'
 import { convergenceOf } from '../signal-model/convergence.ts'
 import { SBR_PRESS_BASELINE, SOUTHWARK_BRIDGE_ROAD_SEED as SEED } from '../signal-model/seed.ts'
 import type { Signal } from '../signal-model/types.ts'
@@ -50,14 +49,11 @@ export function flipWithEpc(epc: Signal): { before: boolean; after: boolean } {
 async function main() {
   console.log(`Task 1 — EPC pressure layer for ${SEED.address}\n`)
 
-  const universe: EpcRow[] = []
-  for (const district of SOUTHWARK_DISTRICTS) {
-    const rows = await epcSearch(district)
-    const large = rows.filter((r) => isLargeCommercial(r))
-    universe.push(...large)
-    console.log(`  EPC ${district}: ${rows.length} certs, ${large.length} ≥1,000 m² non-domestic`)
-  }
-  console.log(`  universe: ${universe.length} large commercial certificates\n`)
+  // Sweep the whole borough by ONS local-authority code. (A bare district like
+  // "SE1" is NOT a valid `postcode` value and makes EPC serve its HTML page.)
+  const rows = await epcByLocalAuthority(SOUTHWARK_ONS, 5000)
+  const universe: EpcRow[] = rows.filter((r) => isLargeCommercial(r))
+  console.log(`  EPC Southwark (${SOUTHWARK_ONS}): ${rows.length} certs, ${universe.length} ≥1,000 m² non-domestic\n`)
 
   const hit = findEpcForAddress(universe, TARGET)
   if (!hit) {

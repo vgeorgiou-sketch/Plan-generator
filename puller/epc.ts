@@ -12,6 +12,7 @@
 import type { Signal } from '../signal-model/types.ts'
 import type { UniverseRecord } from './crossReference.ts'
 import { describeHttpFailure, describeNetworkThrow, isEgressProxied } from './http.ts'
+import { diagnoseNonJson, looksLikeHtml, readJsonOrDiagnose } from './jsonResponse.ts'
 
 const HOST = 'epc.opendatacommunities.org'
 const BASE = `https://${HOST}/api/v1/non-domestic/search`
@@ -108,28 +109,77 @@ export function isLargeCommercial(row: EpcRow, minFloorArea = 1000): boolean {
   return area >= minFloorArea && commercial
 }
 
-export async function epcSearch(postcode: string, size = 100): Promise<EpcRow[]> {
-  const q = new URLSearchParams({ postcode, size: String(size) })
+/** ONS code for Southwark — EPC's `local-authority` filter takes these. */
+export const SOUTHWARK_ONS = 'E09000028'
+
+export interface EpcQuery {
+  /** Full postcode ("SE1 9BB"). A bare district ("SE1") is not a valid value. */
+  postcode?: string
+  /** ONS local-authority code, e.g. E09000028 for Southwark. */
+  localAuthority?: string
+  size?: number
+}
+
+export function buildEpcUrl(q: EpcQuery): string {
+  const params = new URLSearchParams()
+  if (q.postcode) params.set('postcode', q.postcode)
+  if (q.localAuthority) params.set('local-authority', q.localAuthority)
+  params.set('size', String(q.size ?? 100))
+  return `${BASE}?${params}`
+}
+
+/** One raw EPC request, returning the parsed rows or a diagnostic error. */
+export async function epcQuery(q: EpcQuery): Promise<EpcRow[]> {
+  const url = buildEpcUrl(q)
   let res: Response
   try {
-    res = await fetch(`${BASE}?${q}`, { headers: { Authorization: authHeader(), Accept: 'application/json' } })
+    res = await fetch(url, {
+      headers: { Authorization: authHeader(), Accept: 'application/json' },
+    })
   } catch (cause) {
-    throw new Error(describeNetworkThrow('EPC Open Data', HOST, `?postcode=${postcode}`, cause as Error))
+    throw new Error(describeNetworkThrow('EPC Open Data', HOST, url.replace(BASE, ''), cause as Error))
   }
+
   if (!res.ok) {
     const body = await res.text().catch(() => '')
+    // Prefer the richer non-JSON diagnosis when the error page is HTML.
+    if (looksLikeHtml(res.headers.get('content-type') ?? '', body)) {
+      throw new Error(
+        diagnoseNonJson({
+          url,
+          status: res.status,
+          contentType: res.headers.get('content-type') ?? '',
+          body,
+          redirected: res.redirected,
+          finalUrl: res.url,
+          location: res.headers.get('location'),
+        }),
+      )
+    }
     throw new Error(
       describeHttpFailure({
         service: 'EPC Open Data',
         host: HOST,
         status: res.status,
-        path: `?postcode=${postcode}`,
+        path: url.replace(BASE, ''),
         body,
         proxied: isEgressProxied(),
         credHint: CRED_HINT,
       }),
     )
   }
-  const data = (await res.json()) as { rows?: EpcRow[] }
+
+  // 200 but possibly HTML — never crash on JSON.parse.
+  const data = await readJsonOrDiagnose<{ rows?: EpcRow[] }>(res, url)
   return data.rows ?? []
+}
+
+/** Back-compat helper: search by full postcode. */
+export async function epcSearch(postcode: string, size = 100): Promise<EpcRow[]> {
+  return epcQuery({ postcode, size })
+}
+
+/** Pull a whole local authority (the right way to sweep a borough). */
+export async function epcByLocalAuthority(onsCode = SOUTHWARK_ONS, size = 100): Promise<EpcRow[]> {
+  return epcQuery({ localAuthority: onsCode, size })
 }
