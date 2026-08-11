@@ -1,0 +1,38 @@
+{
+  "opportunities": [
+    {
+      "id": 1,
+      "title": "Main entrance accessibility",
+      "rationale": "placeholder — rationale for opportunity 1",
+      "whyItMatters": "placeholder — why it matters for opportunity 1",
+      "image": null
+    },
+    {
+      "id": 2,
+      "title": "Reception and arrival sequence",
+      "rationale": "placeholder — rationale for opportunity 2",
+      "whyItMatters": "placeholder — why it matters for opportunity 2",
+      "image": null
+    },
+    {
+      "id": 3,
+      "title": "Core and lift lobby legibility",
+      "rationale": "placeholder — rationale for opportunity 3",
+      "whyItMatters": "placeholder — why it matters for opportunity 3",
+      "image": null
+    }
+  ],
+  "floors": [
+    {
+      "id": "ground",
+      "label": "Ground",
+      "plan": "ground.png",
+      "active": [1, 2, 3],
+      "hotspots": {
+        "1": { "x": 23, "y": 33 },
+        "2": { "x": 55, "y": 39 },
+        "3": { "x": 56, "y": 66 }
+      }
+    }
+  ]
+}

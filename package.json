@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "plans": "node scripts/plans-to-png.mjs",
+    "predev": "npm run plans",
+    "prebuild": "npm run plans"
   },
   "dependencies": {
     "@fontsource/geist-sans": "^5.2.5",

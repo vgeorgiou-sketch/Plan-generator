@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Generated from plans/*.pdf by `npm run plans`
+public/plans/
