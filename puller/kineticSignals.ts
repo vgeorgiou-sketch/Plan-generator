@@ -8,7 +8,7 @@ import type { Signal } from '../signal-model/types.ts'
 import type { CompanyHit, Charge } from './companiesHouse.ts'
 import type { KineticHit } from './crossReference.ts'
 
-function addressString(a?: Record<string, string>): string {
+export function addressString(a?: Record<string, string>): string {
   if (!a) return ''
   return [a.premises, a.address_line_1, a.address_line_2, a.locality, a.postal_code]
     .filter(Boolean)

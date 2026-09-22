@@ -26,6 +26,7 @@ import { matchAddress } from './addressMatch.ts'
 import { convergenceOf } from '../signal-model/convergence.ts'
 import { SBR_PRESS_BASELINE, SOUTHWARK_BRIDGE_ROAD_SEED as SEED } from '../signal-model/seed.ts'
 import type { Signal } from '../signal-model/types.ts'
+import { fileURLToPath } from 'node:url'
 
 const ADDRESS_QUERY = '38-48 Southwark Bridge Road'
 const TARGET = `${SEED.address} ${SEED.postcode}`
@@ -93,8 +94,12 @@ async function main() {
   console.log(`\n  Convergence: ${before ? 'converged' : 'not converged'} → ${after ? 'CONVERGED ✓' : 'still not converged'}`)
 }
 
-main().catch((err) => {
-  console.error('\nTask 1 could not complete:\n  ' + (err as Error).message)
-  console.error('\nNo EPC record is reported because none was pulled. (Not fabricated.)')
-  process.exit(1)
-})
+// Only run the live CLI when this file is executed directly — importing
+// it for its pure functions (as tests do) must never also fire network calls.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('\nTask 1 could not complete:\n  ' + (err as Error).message)
+    console.error('\nNo EPC record is reported because none was pulled. (Not fabricated.)')
+    process.exit(1)
+  })
+}

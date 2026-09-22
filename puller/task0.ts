@@ -22,6 +22,7 @@ import {
 } from './companiesHouse.ts'
 import { isLLPNumber, summariseLeadTime, type LeadTimeResult } from './leadTime.ts'
 import { SOUTHWARK_BRIDGE_ROAD as T } from '../signal-model/targets.ts'
+import { fileURLToPath } from 'node:url'
 
 const WINDOW_DAYS = 730
 
@@ -166,8 +167,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('\nTask 0 could not complete:\n  ' + (err as Error).message)
-  console.error('\nNo lead-time number is printed because none was measured. (Not fabricated.)')
-  process.exit(1)
-})
+// Only run the live CLI when this file is executed directly — importing
+// it for its pure functions (as tests do) must never also fire network calls.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('\nTask 0 could not complete:\n  ' + (err as Error).message)
+    console.error('\nNo lead-time number is printed because none was measured. (Not fabricated.)')
+    process.exit(1)
+  })
+}

@@ -9,9 +9,9 @@
 import { buildConclusion } from './conclusion.ts'
 import { detectClusters } from './cluster.ts'
 import { SBR_ANALYSIS_ASOF, SBR_DISCLOSURE_DATE, SOUTHWARK_BRIDGE_ROAD_GRAPH } from './seed.ts'
-import type { Cluster, Conclusion } from './types.ts'
+import type { Conclusion } from './types.ts'
 
-function renderConclusion(cluster: Cluster, c: Conclusion): string {
+function renderConclusion(c: Conclusion): string {
   const lines: string[] = []
   lines.push(`[${c.strength.toUpperCase()}]  ${c.headline}`)
   lines.push('')
@@ -42,7 +42,7 @@ function main() {
   for (const cluster of clusters) {
     const conclusion = buildConclusion(cluster, { asOf: SBR_ANALYSIS_ASOF, pressDate: SBR_DISCLOSURE_DATE })
     console.log('═'.repeat(70))
-    console.log(renderConclusion(cluster, conclusion))
+    console.log(renderConclusion(conclusion))
     console.log('')
   }
 }

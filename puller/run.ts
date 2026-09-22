@@ -16,6 +16,7 @@ import { scanNewSpvs } from './spvScan.ts'
 import { fetchWeeklyListHtml, parseWeeklyList, demolitionRows, demolitionToHit } from './southwarkDemolition.ts'
 import { assemble, convergedOnly, type KineticHit, type UniverseRecord } from './crossReference.ts'
 import { scoreBandLine } from './report.ts'
+import { fileURLToPath } from 'node:url'
 
 async function main() {
   const asOf = new Date().toISOString().slice(0, 10)
@@ -70,8 +71,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('\nSpike could not complete:\n  ' + (err as Error).message)
-  console.error('\nNo results printed because none were measured. (Not fabricated.)')
-  process.exit(1)
-})
+// Only run the live CLI when this file is executed directly — importing
+// it for its pure functions (as tests do) must never also fire network calls.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('\nSpike could not complete:\n  ' + (err as Error).message)
+    console.error('\nNo results printed because none were measured. (Not fabricated.)')
+    process.exit(1)
+  })
+}

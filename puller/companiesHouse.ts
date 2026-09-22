@@ -118,6 +118,10 @@ export interface Charge {
   created_on?: string
   satisfied_on?: string
   classification?: { description?: string }
+  /** Not always present on the charges LIST endpoint — some registries only
+   *  carry the chargee's name on the charge DETAIL endpoint. Read tolerantly;
+   *  when absent, callers must not fabricate a lender name (see sweep.ts). */
+  persons_entitled?: { name?: string }[]
 }
 
 function authHeader(): string {
@@ -221,4 +225,24 @@ export async function personsWithSignificantControl(companyNumber: string): Prom
     `/company/${companyNumber}/persons-with-significant-control?items_per_page=100`,
   )
   return data.items ?? []
+}
+
+export interface OfficerItem {
+  name?: string
+  officer_role?: string // "director" | "llp-member" | "secretary" | ...
+  appointed_on?: string
+  resigned_on?: string
+  nationality?: string
+  occupation?: string
+}
+
+/** Officer/director (or LLP member) list — Part 1's public-contact source. */
+export async function officers(companyNumber: string): Promise<OfficerItem[]> {
+  const data = await chGet<{ items?: OfficerItem[] }>(`/company/${companyNumber}/officers?items_per_page=100`)
+  return data.items ?? []
+}
+
+/** Officers still in post (no resignation filed) — the current, actionable list. */
+export function activeOfficers(items: OfficerItem[]): OfficerItem[] {
+  return items.filter((o) => !o.resigned_on)
 }

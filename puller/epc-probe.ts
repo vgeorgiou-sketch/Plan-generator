@@ -11,6 +11,7 @@
 
 import { BASE, buildEpcUrl, extractRows, HOST, type EpcQuery } from './epc.ts'
 import { BODY_SNIPPET_LEN, looksLikeHtml, snippet } from './jsonResponse.ts'
+import { fileURLToPath } from 'node:url'
 
 const TOKEN = process.env.EPC_API_KEY ?? ''
 const ADDRESS = '38-48 Southwark Bridge Road'
@@ -103,7 +104,11 @@ How to read this:
     mapping to the real shape instead of the tolerant guesses.`)
 }
 
-main().catch((err) => {
-  console.error('\nProbe failed: ' + (err as Error).message)
-  process.exit(1)
-})
+// Only run the live CLI when this file is executed directly — importing
+// it for its pure functions (as tests do) must never also fire network calls.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('\nProbe failed: ' + (err as Error).message)
+    process.exit(1)
+  })
+}
