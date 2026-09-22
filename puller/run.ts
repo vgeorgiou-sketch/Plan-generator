@@ -12,7 +12,7 @@
 */
 
 import { epcByCouncil, isLargeCommercial, normaliseEpcRow } from './epc.ts'
-import { scanNewSpvs, SOUTHWARK_DISTRICTS } from './spvScan.ts'
+import { scanNewSpvs } from './spvScan.ts'
 import { fetchWeeklyListHtml, parseWeeklyList, demolitionRows, demolitionToHit } from './southwarkDemolition.ts'
 import { assemble, convergedOnly, type KineticHit, type UniverseRecord } from './crossReference.ts'
 import { scoreBandLine } from './report.ts'

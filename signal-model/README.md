@@ -48,14 +48,9 @@ node --experimental-strip-types signal-model/validate.ts   # 20 assertions, all 
 
 ## Migration status
 
-**Not yet done — awaiting go-ahead, because it breaks the live demo (PR #1, shared artifact).** The spec's migration notes call for:
-
-1. Delete/archive one of the two scoring systems (don't merge — incompatible assumptions).
-2. Remove the mocked 12 opportunities and `aiStatus: 'Auto-classified'`; ship an empty state until a real puller lands data.
-
-Status: the model, the two new layers, and the confirmed seed are built and
-tested. The **app-level cutover** (archive the additive scoring, delete the 12
-mocks, rebuild the grid to render `seed.ts`) is the one destructive, outward-
-facing step — it breaks the live demo on PR #1 and the shared artifact — and is
-held pending an explicit go-ahead. See `../puller` for why the puller can't run
-in this environment yet.
+**Done.** `src/radar/model.ts` (additive scoring) is archived, the 12 mock
+opportunities are deleted, and the app renders `seed.ts` through
+`src/radar/SignalGrid.tsx` — genuinely empty cells for layers not yet pulled,
+no padding. See `../puller` for why the puller can't run live in this
+environment (egress). `../graph-model` builds the link-graph/conclusion layer
+on top of this model.
