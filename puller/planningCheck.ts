@@ -74,6 +74,9 @@ async function runCase(c: VerificationCase): Promise<void> {
   if (result.dateSpan) {
     console.log(`  date span of matches: ${result.dateSpan.earliest} .. ${result.dateSpan.latest}`)
   }
+  if (result.error) {
+    console.log(`  ⚠ one or more variants failed alongside the successful one(s) — ${result.error}`)
+  }
 
   if (result.matches.length === 0) {
     console.log(`\n  No matching applications found. → FAIL — the known answer (${c.knownReference}) was not reproduced.`)

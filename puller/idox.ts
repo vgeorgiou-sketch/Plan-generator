@@ -87,3 +87,72 @@ export function parseIdoxResultList(html: string, base = IDOX_BASE): IdoxResultR
 export function looksLikeIdoxResultsPage(html: string): boolean {
   return /class="searchresult"|no\s+results\s+were\s+found|your\s+search\s+found/i.test(html)
 }
+
+export interface ParsedIdoxForm {
+  action: string
+  method: 'GET' | 'POST'
+  /** Every name → value pair the form actually carries (hidden fields
+   *  included) — read from the real HTML, never guessed. A search flow
+   *  replays these as-is and only overrides the one field it cares about,
+   *  so a session/CSRF token Idox embeds in the form survives the round
+   *  trip untouched. */
+  fields: Record<string, string>
+}
+
+function decodeEntities(s: string): string {
+  return s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+}
+
+/**
+ * Parse a <form> out of an Idox page: its action URL, method, and every
+ * field it carries. Confirmed necessary live: a cold GET straight to a
+ * results endpoint returns HTTP 500 (reproduced identically by curl, so
+ * it's the request shape, not a network/TLS issue) — Idox's classic
+ * pattern is GET the search form to establish a session, then POST the
+ * search with that session's cookie. Picks the first <form> whose action
+ * matches `actionHint` (to skip an unrelated header/site-search form on
+ * the same page), or the first form on the page if none match.
+ */
+export function parseIdoxForm(html: string, base: string, actionHint?: RegExp): ParsedIdoxForm | undefined {
+  const forms = html.match(/<form\b[^>]*>[\s\S]*?<\/form>/gi) ?? []
+  if (!forms.length) return undefined
+  const picked = (actionHint ? forms.find((f) => actionHint.test(f)) : undefined) ?? forms[0]
+
+  const actionMatch = picked.match(/<form\b[^>]*\baction=["']([^"']*)["']/i)
+  const methodMatch = picked.match(/<form\b[^>]*\bmethod=["']([^"']*)["']/i)
+  const action = new URL(actionMatch ? decodeEntities(actionMatch[1]) : '', base).toString()
+  const method: 'GET' | 'POST' = /post/i.test(methodMatch?.[1] ?? '') ? 'POST' : 'GET'
+
+  const fields: Record<string, string> = {}
+
+  const inputRe = /<input\b([^>]*)\/?>/gi
+  let m: RegExpExecArray | null
+  while ((m = inputRe.exec(picked))) {
+    const attrs = m[1]
+    const name = attrs.match(/\bname=["']([^"']+)["']/i)?.[1]
+    if (!name) continue
+    const type = (attrs.match(/\btype=["']([^"']+)["']/i)?.[1] ?? 'text').toLowerCase()
+    if (['submit', 'button', 'image', 'reset', 'file'].includes(type)) continue
+    if ((type === 'checkbox' || type === 'radio') && !/\bchecked\b/i.test(attrs)) continue
+    const value = attrs.match(/\bvalue=["']([^"']*)["']/i)?.[1]
+    fields[name] = value !== undefined ? decodeEntities(value) : ''
+  }
+
+  const selectRe = /<select\b([^>]*)>([\s\S]*?)<\/select>/gi
+  while ((m = selectRe.exec(picked))) {
+    const name = m[1].match(/\bname=["']([^"']+)["']/i)?.[1]
+    if (!name) continue
+    const optionRe = /<option\b([^>]*)>/gi
+    let om: RegExpExecArray | null
+    let chosen: string | undefined
+    let first: string | undefined
+    while ((om = optionRe.exec(m[2]))) {
+      const val = decodeEntities(om[1].match(/\bvalue=["']([^"']*)["']/i)?.[1] ?? '')
+      if (first === undefined) first = val
+      if (/\bselected\b/i.test(om[1])) chosen = val
+    }
+    fields[name] = chosen ?? first ?? ''
+  }
+
+  return { action, method, fields }
+}

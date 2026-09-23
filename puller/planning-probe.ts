@@ -93,6 +93,7 @@ async function probeKnownCase(address: string): Promise<void> {
   }
   console.log(`(searched via: ${result.variantsUsed.join(' + ')})`)
   if (result.dateSpan) console.log(`date span: ${result.dateSpan.earliest} .. ${result.dateSpan.latest}`)
+  if (result.error) console.log(`⚠ one or more variants failed alongside the successful one(s) — ${result.error}`)
 
   const found = result.matches.find((m) => m.reference === knownRef)
   console.log(`${result.matches.length} matching application(s):`)

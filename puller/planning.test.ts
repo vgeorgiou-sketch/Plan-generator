@@ -3,13 +3,15 @@
   Proves the pure logic offline against the REAL, manually-verified data for
   both known cases (not fictional examples): date extraction, both confirmed
   Southwark reference formats, application-type classification, address
-  matching, never fabricating a date, and — critically — that
+  matching, never fabricating a date, the real GET-form-then-POST-search
+  flow (confirmed live: a cold GET straight to the results endpoint returns
+  HTTP 500, reproduced identically by curl), and — critically — that
   checkPlanningForAddress unions results across every search variant rather
   than stopping at the first, which is the actual fix for the brief's
   "nearly missed it with a 90-day default" warning.
 */
 
-import { parseIdoxResultList, ukDateToIso, looksLikeIdoxResultsPage } from './idox.ts'
+import { parseIdoxResultList, parseIdoxForm, ukDateToIso, looksLikeIdoxResultsPage, IDOX_BASE } from './idox.ts'
 import {
   checkPlanningForAddress,
   classifyApplicationType,
@@ -121,13 +123,42 @@ console.log('\nsignal building — never fabricates a date')
   assert('a row with no parseable date produces NO signal — refuses to fabricate observedAt', noSig === null, noSig)
 }
 
-console.log('\nfull-history discipline: no date-range parameter is ever sent')
+console.log('\nfull-history discipline: no date-range parameter, and every variant is a form page (never a direct results URL)')
 {
-  const variants = planningSearchVariants('38-48 Southwark Bridge Road')
+  const variants = planningSearchVariants()
   assert('at least one search variant exists', variants.length > 0)
   for (const v of variants) {
-    assert(`"${v.name}" carries no date-bound parameter`, !/date|from=|to=/i.test(v.url), v.url)
+    assert(`"${v.name}" formUrl carries no date-bound parameter`, !/date|from=|to=/i.test(v.formUrl), v.formUrl)
+    assert(`"${v.name}" formUrl is a search FORM page, not a *Results.do endpoint`, !/SearchResults/i.test(v.formUrl), v.formUrl)
+    assert(`"${v.name}" names a real field to fill in`, v.fieldName.length > 0)
   }
+}
+
+console.log('\nparseIdoxForm — reads the real form instead of guessing field names or tokens')
+{
+  const SIMPLE_FORM_HTML = `
+<html><body>
+<div id="header"><form action="/online-applications/siteSearch.do" method="GET"><input type="text" name="q" /></form></div>
+<form action="simpleSearchResults.do" method="POST">
+  <input type="hidden" name="org.apache.struts.taglib.html.TOKEN" value="tok-simple-123" />
+  <input type="text" name="searchCriteria.simpleSearchString" value="" />
+  <select name="searchCriteria.resultsPerPage"><option value="10">10</option><option value="25" selected>25</option></select>
+  <input type="submit" value="Search" />
+</form>
+</body></html>`
+
+  const form = parseIdoxForm(SIMPLE_FORM_HTML, `${IDOX_BASE}/search.do?action=simple`, /SearchResults/i)
+  assert('finds a form', form !== undefined, form)
+  assert('picks the form matching the hint, not the unrelated header search box', form?.action.endsWith('/simpleSearchResults.do'), form?.action)
+  assert('resolves a relative action against the base URL', form?.action === `${IDOX_BASE}/simpleSearchResults.do`, form?.action)
+  assert('detects POST (case-insensitive)', form?.method === 'POST')
+  assert('captures the hidden CSRF-style token field', form?.fields['org.apache.struts.taglib.html.TOKEN'] === 'tok-simple-123', form?.fields)
+  assert('captures the empty text field too', form?.fields['searchCriteria.simpleSearchString'] === '', form?.fields)
+  assert('a <select> contributes its SELECTED option, not the first one', form?.fields['searchCriteria.resultsPerPage'] === '25', form?.fields)
+  assert('the submit button is not captured as a field', !('' in (form?.fields ?? {})) && !Object.keys(form?.fields ?? {}).includes('Search'))
+
+  assert('falls back to the first form when the hint matches nothing', parseIdoxForm(SIMPLE_FORM_HTML, IDOX_BASE, /nope-does-not-exist/i)?.action.endsWith('/siteSearch.do'))
+  assert('no <form> at all → undefined, not a crash', parseIdoxForm('<html><body>no form here</body></html>', IDOX_BASE) === undefined)
 }
 
 /** A minimally-real mock Response — has the `.headers.getSetCookie()` shape
@@ -142,7 +173,16 @@ function mockResponse(body: string, opts: { ok?: boolean; status?: number; setCo
   } as unknown as Response
 }
 
-const WARMUP_URL_SUFFIX = '/online-applications/'
+// Confirmed live: Idox's search flow is GET the form, then POST the query.
+// These fixtures stand in for the two real form pages this codebase GETs.
+const SIMPLE_FORM_HTML = `<form action="simpleSearchResults.do" method="POST"><input type="hidden" name="token" value="tok-1" /><input type="text" name="searchCriteria.simpleSearchString" value="" /></form>`
+const ADVANCED_FORM_HTML = `<form action="advancedSearchResults.do" method="POST"><input type="hidden" name="token" value="tok-2" /><input type="text" name="searchCriteria.address" value="" /></form>`
+
+function isFormRequest(url: string): 'simple' | 'advanced' | undefined {
+  if (url.includes('search.do?action=simple')) return 'simple'
+  if (url.includes('search.do?action=advanced')) return 'advanced'
+  return undefined
+}
 
 console.log('\ncheckPlanningForAddress — unions results across ALL variants (the actual fix)')
 {
@@ -152,21 +192,23 @@ console.log('\ncheckPlanningForAddress — unions results across ALL variants (t
   // first real page" implementation would report EMPTY here, because
   // variant A returns a legitimate (if incomplete) results page.
   const NARROW_HTML = '<ul id="searchresults"><li>Your search found no results were found</li></ul>'
-  const FULL_HTML = RESULTS_HTML
 
   const originalFetch = globalThis.fetch
   let callCount = 0
   // @ts-expect-error — test double, not a full fetch implementation
-  globalThis.fetch = async (url: string) => {
+  globalThis.fetch = async (url: string, init?: RequestInit) => {
     callCount++
-    if (url.endsWith(WARMUP_URL_SUFFIX)) return mockResponse('<html>warm-up page</html>', { setCookies: ['JSESSIONID=ABC123; Path=/'] })
-    const isNarrowVariant = url.includes('simpleSearchResults')
-    return mockResponse(isNarrowVariant ? NARROW_HTML : FULL_HTML)
+    const kind = isFormRequest(url)
+    if (kind === 'simple') return mockResponse(SIMPLE_FORM_HTML, { setCookies: ['JSESSIONID=SIMPLE1; Path=/'] })
+    if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=ADV1; Path=/'] })
+    // POST to a results endpoint: simple search comes back narrow, advanced finds the real record.
+    const isSimplePost = url.includes('simpleSearchResults') && init?.method === 'POST'
+    return mockResponse(isSimplePost ? NARROW_HTML : RESULTS_HTML)
   }
 
   try {
     const result = await checkPlanningForAddress('68 Borough Road')
-    assert('warm-up + both variants were called (3 total)', callCount === 3, callCount)
+    assert('4 requests total: (GET form + POST search) × 2 variants', callCount === 4, callCount)
     assert('both variants counted as "used" (both returned real, if different, pages)', result.variantsUsed.length === 2, result.variantsUsed)
     assert('the real record is found despite one variant returning nothing', result.matches.length === 1 && result.matches[0].reference === '23/AP/3411', result.matches)
     assert('date span is reported for the full-history sanity check', result.dateSpan?.earliest === '2023-12-08' && result.dateSpan?.latest === '2023-12-08', result.dateSpan)
@@ -175,33 +217,86 @@ console.log('\ncheckPlanningForAddress — unions results across ALL variants (t
   }
 }
 
-console.log('\ncheckPlanningForAddress — acquires a session cookie and threads it into every variant')
+console.log('\ncheckPlanningForAddress — GETs the search form, then POSTs with that session\'s cookie')
 {
-  // Confirmed via a real browser session: the site sets JSESSIONID (and,
-  // behind the NetScaler, its own persistence cookie) on the very first
-  // request. Both must be captured (getSetCookie, not the lossy get()) and
-  // replayed on every subsequent search request.
+  // Confirmed via curl on the real machine: a cold GET straight to the
+  // results endpoint returns HTTP 500, even though it sets a fresh
+  // JSESSIONID. The fix is GET the form (session established there),
+  // POST the query with that cookie — this proves the code actually does
+  // that, not just "a cookie exists somewhere".
   const originalFetch = globalThis.fetch
-  const capturedHeaders: Record<string, string>[] = []
+  const calls: { url: string; method: string; cookie?: string; body?: string }[] = []
   // @ts-expect-error — test double
   globalThis.fetch = async (url: string, init?: RequestInit) => {
-    capturedHeaders.push({ ...(init?.headers as Record<string, string>) })
-    if (url.endsWith(WARMUP_URL_SUFFIX)) {
-      return mockResponse('<html>warm-up page</html>', { setCookies: ['JSESSIONID=ABC123; Path=/; HttpOnly', 'NSC_mc=xyz789; Secure; HttpOnly'] })
-    }
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    calls.push({ url, method: init?.method ?? 'GET', cookie: headers.Cookie, body: init?.body as string | undefined })
+    const kind = isFormRequest(url)
+    if (kind === 'simple') return mockResponse(SIMPLE_FORM_HTML, { setCookies: ['JSESSIONID=SIMPLE1; Path=/; HttpOnly', 'NSC_mc=simple-nsc; Secure; HttpOnly'] })
+    if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=ADV1; Path=/; HttpOnly'] })
     return mockResponse(RESULTS_HTML)
   }
 
   try {
-    await checkPlanningForAddress('68 Borough Road')
-    assert('exactly 3 requests: 1 warm-up + 2 variants', capturedHeaders.length === 3, capturedHeaders.length)
-    assert('the warm-up request itself carries no cookie yet', !('Cookie' in capturedHeaders[0]), capturedHeaders[0])
-    const variantHeaders = capturedHeaders.slice(1)
-    assert(
-      'BOTH cookies (JSESSIONID + the NetScaler NSC_ persistence cookie) are threaded into every variant request',
-      variantHeaders.every((h) => h.Cookie === 'JSESSIONID=ABC123; NSC_mc=xyz789'),
-      variantHeaders,
-    )
+    await checkPlanningForAddress('38-48 Southwark Bridge Road')
+    assert('4 calls: GET form + POST search, for each of the 2 variants', calls.length === 4, calls)
+
+    const simpleGet = calls.find((c) => c.url.includes('search.do?action=simple'))
+    const simplePost = calls.find((c) => c.url.includes('simpleSearchResults'))
+    assert('the simple-search form GET carries no cookie (first hit)', simpleGet?.method === 'GET' && !simpleGet.cookie, simpleGet)
+    assert('the simple-search POST uses the cookie issued by ITS OWN form GET, not a shared warm-up', simplePost?.method === 'POST' && simplePost.cookie === 'JSESSIONID=SIMPLE1; NSC_mc=simple-nsc', simplePost)
+    assert('the simple-search POST body carries the address in the real field name found on the form', Boolean(simplePost?.body?.includes(encodeURIComponent('38-48 Southwark Bridge Road').replace(/%20/g, '+'))) || Boolean(simplePost?.body?.includes('38-48+Southwark+Bridge+Road')), simplePost?.body)
+    assert("the simple-search POST body preserves the form's own hidden token field", Boolean(simplePost?.body?.includes('token=tok-1')), simplePost?.body)
+    assert('the simple-search POST targets ?action=firstPage, carried over from the confirmed-working direct GET', Boolean(simplePost?.url.includes('action=firstPage')), simplePost?.url)
+
+    const advancedPost = calls.find((c) => c.url.includes('advancedSearchResults'))
+    assert("the advanced-search POST uses ITS OWN form's cookie (ADV1), independent of the simple variant's", advancedPost?.cookie === 'JSESSIONID=ADV1', advancedPost)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+console.log('\ncheckPlanningForAddress — a non-2xx response body is captured, not swallowed (Idox error pages name the problem)')
+{
+  const originalFetch = globalThis.fetch
+  const ERROR_BODY = '<html><body><h1>Internal Server Error</h1><p>Required parameter searchCriteria.simpleSearchString is missing</p></body></html>'
+  // @ts-expect-error — test double
+  globalThis.fetch = async (url: string) => {
+    const kind = isFormRequest(url)
+    if (kind === 'simple') return mockResponse(SIMPLE_FORM_HTML, { setCookies: ['JSESSIONID=SIMPLE1; Path=/'] })
+    if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=ADV1; Path=/'] })
+    // Both results POSTs fail with a 500 carrying a diagnosable body.
+    return mockResponse(ERROR_BODY, { ok: false, status: 500 })
+  }
+
+  try {
+    const result = await checkPlanningForAddress('anywhere')
+    assert('checked is false — a 500 on every variant is never presented as a confirmed empty result', result.checked === false)
+    assert('the 500 status is named in the error', Boolean(result.error?.includes('500')), result.error)
+    assert('the response BODY is captured in the error, not just the status code', Boolean(result.error?.includes('Required parameter')), result.error)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+console.log('\ncheckPlanningForAddress — a field-name mismatch is surfaced, never silently guessed')
+{
+  const originalFetch = globalThis.fetch
+  // A form that does NOT contain the field name this codebase expects —
+  // simulating Idox's real form turning out to differ from the assumption.
+  const WRONG_FIELD_FORM_HTML = `<form action="simpleSearchResults.do" method="POST"><input type="text" name="someOtherFieldName" value="" /></form>`
+  // @ts-expect-error — test double
+  globalThis.fetch = async (url: string) => {
+    const kind = isFormRequest(url)
+    if (kind === 'simple') return mockResponse(WRONG_FIELD_FORM_HTML, { setCookies: ['JSESSIONID=X; Path=/'] })
+    if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=Y; Path=/'] })
+    return mockResponse(RESULTS_HTML)
+  }
+
+  try {
+    const result = await checkPlanningForAddress('anywhere')
+    assert('the simple-search variant fails (its assumed field name is not on the real form)', !result.variantsUsed.includes('simple search (form → POST)'), result.variantsUsed)
+    assert('the mismatch names the field it looked for AND the real fields it found instead', Boolean(result.error?.includes('searchCriteria.simpleSearchString') && result.error?.includes('someOtherFieldName')), result.error)
+    assert('the OTHER variant (advanced search) still succeeds independently', result.variantsUsed.includes('advanced search (form → POST)'), result.variantsUsed)
   } finally {
     globalThis.fetch = originalFetch
   }

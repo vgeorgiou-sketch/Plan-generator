@@ -44,35 +44,52 @@
   actual advanced-search form for a hidden default and fix it — not to trust
   silence.
 
-  Structural uncertainty, not hidden: Idox's ADDRESS/KEYWORD search sometimes
-  needs a server-side session, unlike the weekly list (a stateless GET).
-  planning-probe.ts reports which variant — if any — actually returns a real
-  results page, for BOTH sources above, before planningCheck.ts is trusted.
+  CONFIRMED live (curl reproduces the identical failure, so it's the
+  request shape, not Node/TLS): a cold GET straight to a results endpoint
+  (e.g. simpleSearchResults.do?action=firstPage&searchCriteria...=...)
+  returns HTTP 500, even though the response sets a fresh JSESSIONID.
+  Classic Idox pattern — the results endpoint needs a session AND a POST:
+  (1) GET the search FORM page first (search.do?action=simple /
+  action=advanced) to establish a session; (2) POST the search, with that
+  session's cookie attached and the form's OWN fields (idox.ts's
+  parseIdoxForm reads them from the real HTML — hidden tokens included —
+  rather than guessing a field shape). Never crashes silently past a
+  non-2xx: the response body is captured and surfaced in the error, since
+  Idox's error pages tend to name the exact problem.
 */
 
-import { looksLikeIdoxResultsPage, parseIdoxResultList, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
+import { looksLikeIdoxResultsPage, parseIdoxResultList, parseIdoxForm, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
 import { matchAddress } from './addressMatch.ts'
 import { collectCookiePairs, detectProxyUrl, proxyDispatcher, BOT_USER_AGENT } from './netEnv.ts'
+import { snippet } from './jsonResponse.ts'
 import type { Signal } from '../signal-model/types.ts'
 
 export interface PlanningSearchVariant {
   name: string
-  url: string
+  /** The search FORM page to GET first — its cookie response is the
+   *  session the subsequent POST needs. */
+  formUrl: string
+  /** The field on that form to set with the address/keyword query. Must
+   *  exist among the form's real fields (checked, not assumed) — if it
+   *  doesn't, that's a genuine anomaly worth surfacing, not something to
+   *  silently patch over with a guessed name. */
+  fieldName: string
 }
 
 /**
- * GET-only search URL candidates, most-likely-to-work-without-a-session
- * first. Deliberately carry NO date-range parameter — omitting a filter
- * requests full history; guessing a specific "from 1990" override param
- * name risks the server silently ignoring an unrecognised parameter while
- * looking like full history was requested. checkPlanningForAddress's date-
- * span diagnostic is the real check on whether that assumption holds.
+ * Both of Idox's search entry points — simple (free-text) and advanced
+ * (address field) — as form pages to GET first, never as a direct results
+ * URL. Deliberately carry NO date-range parameter anywhere in this flow:
+ * omitting a filter requests full history; guessing a specific "from 1990"
+ * override param name risks the server silently ignoring an unrecognised
+ * parameter while looking like full history was requested.
+ * checkPlanningForAddress's date-span diagnostic is the real check on
+ * whether that assumption holds.
  */
-export function planningSearchVariants(address: string): PlanningSearchVariant[] {
-  const q = encodeURIComponent(address)
+export function planningSearchVariants(): PlanningSearchVariant[] {
   return [
-    { name: 'simpleSearchResults (GET, common Idox pattern)', url: `${IDOX_BASE}/simpleSearchResults.do?action=firstPage&searchCriteria.simpleSearchString=${q}` },
-    { name: 'advancedSearchResults (GET, address field)', url: `${IDOX_BASE}/advancedSearchResults.do?action=firstPage&searchCriteria.address=${q}` },
+    { name: 'simple search (form → POST)', formUrl: `${IDOX_BASE}/search.do?action=simple`, fieldName: 'searchCriteria.simpleSearchString' },
+    { name: 'advanced search (form → POST)', formUrl: `${IDOX_BASE}/search.do?action=advanced`, fieldName: 'searchCriteria.address' },
   ]
 }
 
@@ -80,10 +97,15 @@ export interface FetchPlanningOptions {
   /** Defaults to the honest, self-identifying bot UA. Override once
    *  planning-probe.ts has confirmed a browser UA is actually needed. */
   userAgent?: string
-  /** A session cookie to replay. When omitted, checkPlanningForAddress
-   *  acquires one itself via a warm-up request — pass this explicitly only
-   *  to override that (e.g. from planning-probe.ts's own diagnostics). */
+  /** A session cookie to replay. When omitted, each search variant
+   *  acquires its own via the form-page GET — pass this explicitly only to
+   *  override that (e.g. from planning-probe.ts's own diagnostics). */
   cookie?: string
+}
+
+interface PlanningRequestInit extends FetchPlanningOptions {
+  method?: 'GET' | 'POST'
+  body?: string
 }
 
 export interface PlanningPageResult {
@@ -93,15 +115,18 @@ export interface PlanningPageResult {
   cookies: string[]
 }
 
-async function fetchPlanningPage(url: string, opts: FetchPlanningOptions = {}): Promise<PlanningPageResult> {
+async function fetchPlanningPage(url: string, opts: PlanningRequestInit = {}): Promise<PlanningPageResult> {
   const dispatcher = proxyDispatcher()
   const headers: Record<string, string> = { 'User-Agent': opts.userAgent ?? BOT_USER_AGENT }
   if (opts.cookie) headers['Cookie'] = opts.cookie
+  if (opts.body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
   let res: Response
   try {
     res = await fetch(url, {
+      method: opts.method ?? 'GET',
       headers,
+      body: opts.body,
       redirect: 'follow',
       ...(dispatcher ? { dispatcher } : {}),
     } as RequestInit)
@@ -114,27 +139,60 @@ async function fetchPlanningPage(url: string, opts: FetchPlanningOptions = {}): 
         '--use-system-ca flag (Node 22.9+), which trusts the OS certificate store the same way curl/the ' +
         'browser does. If this script was already run with that flag and still fails, run ' +
         'puller/planning-probe.ts for a fresh diagnosis; ' +
-        `(3) User-Agent/session requirements — also tested by the same probe. Cause: ${(cause as Error).message}`,
+        `(3) form/session requirements — this flow already GETs the search form first, see this file's ` +
+        `header. Cause: ${(cause as Error).message}`,
     )
   }
-  if (!res.ok) throw new Error(`Southwark planning search ${res.status}`)
-  return { html: await res.text(), cookies: collectCookiePairs(res) }
+  const html = await res.text()
+  if (!res.ok) {
+    throw new Error(
+      `Southwark planning ${opts.method ?? 'GET'} ${url} → HTTP ${res.status}. Idox error pages often ` +
+        `name the exact problem — body: ${snippet(html)}`,
+    )
+  }
+  return { html, cookies: collectCookiePairs(res) }
 }
 
-export async function fetchPlanningSearchHtml(url: string, opts: FetchPlanningOptions = {}): Promise<string> {
-  return (await fetchPlanningPage(url, opts)).html
+function withQueryParam(url: string, key: string, value: string): string {
+  const u = new URL(url)
+  u.searchParams.set(key, value)
+  return u.toString()
 }
 
 /**
- * GET the search entry page to acquire the session Idox's search flow
- * needs — confirmed via a real browser session (curl gets a JSESSIONID on
- * the very first request; the NetScaler in front adds its own persistence
- * cookie too). A stateless single GET with no cookie may not carry Idox's
- * server-side search state the way a browser's session does.
+ * GET the search form, then POST the query with that session's cookie —
+ * the confirmed-live two-step flow (see this file's header). Uses the
+ * form's OWN action URL, method and fields (idox.ts's parseIdoxForm reads
+ * them from the real HTML — hidden session/CSRF tokens included — rather
+ * than guessing), overriding only the one field this search cares about.
+ * `?action=firstPage` is appended to the submit URL: the query-string
+ * action Idox's Struts-style dispatch used on the (previously working, now
+ * 500ing without a session) direct GET, kept because it's real evidence of
+ * what the results endpoint expects, not a fresh guess.
  */
-export async function fetchSessionCookies(opts: FetchPlanningOptions = {}): Promise<string | undefined> {
-  const { cookies } = await fetchPlanningPage(`${IDOX_BASE}/`, opts)
-  return cookies.length ? cookies.join('; ') : undefined
+async function runSearchVariant(variant: PlanningSearchVariant, address: string, opts: FetchPlanningOptions): Promise<string> {
+  const formPage = await fetchPlanningPage(variant.formUrl, opts)
+  const cookie = formPage.cookies.length ? formPage.cookies.join('; ') : opts.cookie
+
+  const form = parseIdoxForm(formPage.html, variant.formUrl, /SearchResults/i)
+  if (!form) throw new Error(`no <form> found on the search page (${variant.formUrl}) — Idox's page structure may have changed`)
+  if (!(variant.fieldName in form.fields)) {
+    throw new Error(
+      `search form at ${variant.formUrl} has no field named "${variant.fieldName}" — real fields found: ` +
+        `${Object.keys(form.fields).join(', ') || '(none)'}. The field-name assumption needs checking against the live form.`,
+    )
+  }
+
+  const fields = new URLSearchParams(form.fields)
+  fields.set(variant.fieldName, address)
+  const submitUrl = withQueryParam(form.action, 'action', 'firstPage')
+
+  const resultPage =
+    form.method === 'POST'
+      ? await fetchPlanningPage(submitUrl, { ...opts, cookie, method: 'POST', body: fields.toString() })
+      : await fetchPlanningPage(`${submitUrl}&${fields.toString()}`, { ...opts, cookie, method: 'GET' })
+
+  return resultPage.html
 }
 
 // ── application-type classification (from proposal text — Idox rarely
@@ -233,20 +291,27 @@ export interface PlanningCheckResult {
    *  go inspect Idox's actual form for a hidden default window — not to
    *  trust that "no date param was sent" means "full history was returned". */
   dateSpan?: { earliest: string; latest: string }
+  /** Present when `checked: false` (every variant failed — this is why),
+   *  but ALSO present when `checked: true` if at least one variant still
+   *  failed alongside a successful one: a real per-variant problem (a
+   *  field-name mismatch, a 500 with a diagnosable body) should never be
+   *  silently absorbed just because a different variant happened to work. */
   error?: string
 }
 
 /**
- * Safe, per-address planning check. Acquires a session cookie first (unless
- * one was passed in) — confirmed necessary via a real browser session —
- * then runs EVERY search variant with it, not just the first that returns a
- * real page, unioning their rows (deduped by reference): different Idox
- * entry points can apply different defaults, so relying on only one risks
- * silently missing older records exactly the way the brief's own manual
- * check nearly did. Never throws: a failed/undiagnosable check comes back
- * `checked: false` with the error explained, so absence-because-we-
- * couldn't-check is never confused with absence-because-we-confirmed-
- * there's-nothing.
+ * Safe, per-address planning check. Each search variant establishes its
+ * own session (GET the form, POST the query with that session's cookie —
+ * see runSearchVariant) and runs EVERY variant, not just the first that
+ * returns a real page, unioning their rows (deduped by reference):
+ * different Idox entry points can apply different defaults, so relying on
+ * only one risks silently missing older records exactly the way the
+ * brief's own manual check nearly did. Never throws: a failed/undiagnosable
+ * check comes back `checked: false` with the error explained (including
+ * the response body on a non-2xx — see runSearchVariant/fetchPlanningPage —
+ * since Idox's error pages tend to name the exact problem), so absence-
+ * because-we-couldn't-check is never confused with absence-because-we-
+ * confirmed-there's-nothing.
  */
 export async function checkPlanningForAddress(address: string, opts: FetchPlanningOptions = {}): Promise<PlanningCheckResult> {
   const errors: string[] = []
@@ -254,21 +319,11 @@ export async function checkPlanningForAddress(address: string, opts: FetchPlanni
   const seen = new Set<string>()
   const rows: IdoxResultRow[] = []
 
-  let cookie = opts.cookie
-  if (cookie === undefined) {
+  for (const variant of planningSearchVariants()) {
     try {
-      cookie = await fetchSessionCookies(opts)
-    } catch (err) {
-      errors.push(`session warm-up failed, continuing without a cookie: ${(err as Error).message}`)
-    }
-  }
-  const variantOpts: FetchPlanningOptions = { ...opts, cookie }
-
-  for (const variant of planningSearchVariants(address)) {
-    try {
-      const html = await fetchPlanningSearchHtml(variant.url, variantOpts)
+      const html = await runSearchVariant(variant, address, opts)
       if (!looksLikeIdoxResultsPage(html)) {
-        errors.push(`${variant.name}: page did not look like a real results page (session/login/error page?)`)
+        errors.push(`${variant.name}: page did not look like a real results page after the form→POST flow (session/login/error page?)`)
         continue
       }
       variantsUsed.push(variant.name)
@@ -294,5 +349,5 @@ export async function checkPlanningForAddress(address: string, opts: FetchPlanni
     .sort()
   const dateSpan = isoDates.length ? { earliest: isoDates[0], latest: isoDates[isoDates.length - 1] } : undefined
 
-  return { checked: true, variantsUsed, matches, dateSpan }
+  return { checked: true, variantsUsed, matches, dateSpan, ...(errors.length ? { error: errors.join(' | ') } : {}) }
 }

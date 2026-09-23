@@ -69,8 +69,8 @@ and run where egress exists.
 | `http.ts` / `jsonResponse.ts` | Attributes a 403 to egress vs. real auth rejection; diagnoses an HTML-instead-of-JSON response instead of crashing | `http.test.ts` / `jsonResponse.test.ts` ✓ |
 | `sector.ts` | Part 1 — heuristic sector/conversion tagging from company name + matched prior EPC use | `sweep.test.ts` ✓ |
 | `sweep.ts` | Part 1 — structured Southwark discovery (SIC × location × date), full enrichment (PSC/charges/officers/filings) per hit, built as a `../graph-model` cluster | `sweep.test.ts` ✓ |
-| `idox.ts` | Shared Idox Public Access result-list parser (`<li class="searchresult">`) — used by both `southwarkDemolition.ts` and `planning.ts` | `planning.test.ts` ✓ |
-| `planning.ts` | The discriminator: `planningApplication` signal source (Idox, full-history). Application-type classification, address matching, never fabricates a date, unions results across every search variant | `planning.test.ts` ✓ |
+| `idox.ts` | Shared Idox Public Access result-list parser (`<li class="searchresult">`) and form parser (`parseIdoxForm` — action/method/fields from real HTML) — used by both `southwarkDemolition.ts` and `planning.ts` | `planning.test.ts` ✓ |
+| `planning.ts` | The discriminator: `planningApplication` signal source (Idox, full-history, GET-form-then-POST-search — a cold GET 500s). Application-type classification, address matching, never fabricates a date, unions results across every search variant | `planning.test.ts` ✓ |
 | `planningDataGovUk.ts` | Probe-only client for `planning.data.gov.uk` — unconfirmed whether it covers application-level data | — (probe) |
 | `netEnv.ts` | Corporate-proxy detection (`HTTPS_PROXY`/`HTTP_PROXY`) via an `undici` `ProxyAgent`, applied per-request. Needs `undici` (added as a real dependency) | `netEnv.test.ts` ✓ |
 
@@ -170,14 +170,31 @@ option were built and tested along the way, before this simpler,
 confirmed fix was found — removed once `--use-system-ca` proved sufficient,
 to keep this codebase's actual complexity matched to the actual cause.)
 
-`checkPlanningForAddress` also acquires the Idox session cookie
-automatically: a warm-up GET captures **every** `Set-Cookie` header via
-`getSetCookie()` (not the lossy, comma-joined `get('set-cookie')`, which
-would silently drop either the `JSESSIONID` or the NetScaler's own `NSC_`
-persistence cookie), and threads the joined pair into every subsequent
-search-variant request. None of this needs a flag beyond `--use-system-ca`
-— it's automatic in `fetchPlanningSearchHtml`/`checkPlanningForAddress`, so
-`sweep.ts` and `planningCheck.ts` benefit without any change on their end.
+**A second, separate live finding once the connection itself was fixed**:
+with `--use-system-ca` connecting, search requests still came back HTTP
+500 — and curl reproduced the identical 500, confirming it's the request
+shape, not Node. A cold GET straight to a results endpoint
+(`simpleSearchResults.do?action=firstPage&searchCriteria...=...`) 500s
+even though the response sets a fresh `JSESSIONID`. This is Idox's classic
+pattern: the results endpoint needs a session **and** a POST, not a
+stateless GET. `checkPlanningForAddress` (`planning.ts`) now does, per
+search variant: (1) GET the search FORM page (`search.do?action=simple` /
+`action=advanced`) — its `Set-Cookie` response is the session; (2) parse
+the real `<form>` out of that HTML (`idox.ts`'s `parseIdoxForm` — action
+URL, method, and every field including hidden session/CSRF tokens, read
+from the live markup rather than guessed); (3) POST the query with that
+session's cookie attached, using the form's own fields and only
+overriding the one this search cares about. `?action=firstPage` is kept on
+the submit URL — real evidence from the previously-working (now 500ing
+without a session) direct GET, not a fresh guess. If a variant's assumed
+field name isn't actually on the real form, or a request comes back
+non-2xx, the error names exactly that — the real field names found, or the
+response body (`snippet()`, capped) — since Idox's error pages tend to
+name the exact problem; this is proven in `planning.test.ts` with mocked
+forms and a mocked 500. A per-variant failure is surfaced in
+`PlanningCheckResult.error` even when a DIFFERENT variant succeeds, so a
+real problem with one entry point is never silently absorbed into an
+overall "it worked."
 
 `planning-probe.ts` reports proxy detection, whether `--use-system-ca` was
 passed to the current process, a direct connectivity check against the
@@ -185,21 +202,21 @@ real host, then runs the real `checkPlanningForAddress` against both known
 addresses. This sandbox's own network policy blocks the host outright
 regardless of any flag, so a run here only proves the code doesn't crash
 and fails gracefully with a descriptive error — it cannot confirm
-connectivity against the real corporate proxy. That confirmation can only
-come from running `planning-probe.ts` on the actual office machine that
-reproduced this (which it now has, and passed).
+connectivity, the form-page markup, or the field names against the real
+site. That confirmation can only come from running `planning-probe.ts` on
+the actual office machine that reproduced both issues.
 
 **CRITICAL — full history, never a rolling window.** A manual check nearly
 reached a wrong verdict on a default 90-day view; the real Southwark Bridge
 Road application is 17 months after the SPV that formed it. `planning.ts`'s
-search variants carry NO date-bound parameter (omission requests full
-history; guessing a specific override param name that the server silently
-ignores would be false confidence, not a fix). `checkPlanningForAddress`
-goes further: it unions results across **every** search variant instead of
-stopping at the first that returns a page, and reports the returned date
-**span** — proven in `planning.test.ts` with a mocked fetch where one
-variant returns nothing and the other has the real, 3-year-old record; the
-union still finds it.
+search variants carry NO date-bound parameter anywhere in the flow
+(omission requests full history; guessing a specific override param name
+that the server silently ignores would be false confidence, not a fix).
+`checkPlanningForAddress` goes further: it unions results across **every**
+search variant instead of stopping at the first that returns a page, and
+reports the returned date **span** — proven in `planning.test.ts` with a
+mocked fetch where one variant returns nothing and the other has the real,
+3-year-old record; the union still finds it.
 
 **Verification, per the brief — reproducing exact manually-confirmed
 answers, not just "found something plausible"**: `planningCheck.ts` runs
