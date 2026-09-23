@@ -51,6 +51,12 @@ export function ukDateToIso(s: string): string | undefined {
   return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
 }
 
+// Southwark reference formats CONFIRMED real (not guessed): "23/AP/3411"
+// (YY/AP/NNNN — the common full-application shape) and "26/00849/OBS"
+// (YY/NNNNN/XXX — seen on the real Southwark Bridge Road record). Two
+// distinct shapes on the same council's records, so both are matched.
+const REFERENCE = /\b\d{2}\/(?:[A-Z]{2}\/\d{3,5}|\d{4,6}\/[A-Z]{2,4})\b/
+
 /** Parse a list-style Idox results page into rows. */
 export function parseIdoxResultList(html: string, base = IDOX_BASE): IdoxResultRow[] {
   const rows: IdoxResultRow[] = []
@@ -62,7 +68,7 @@ export function parseIdoxResultList(html: string, base = IDOX_BASE): IdoxResultR
     const description = stripTags(anchor[2])
     const addrMatch = block.match(/<p[^>]*class="[^"]*address[^"]*"[^>]*>([\s\S]*?)<\/p>/i)
     const address = addrMatch ? stripTags(addrMatch[1]) : ''
-    const refMatch = (description + ' ' + address).match(/\b\d{2}\/[A-Z]{2}\/\d{3,5}\b/)
+    const refMatch = (description + ' ' + address).match(REFERENCE)
     rows.push({
       reference: refMatch ? refMatch[0] : '',
       address,

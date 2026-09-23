@@ -7,26 +7,47 @@
   SPV formation, charges and PSC changes are thrown off by ordinary commerce
   exactly as much as by real schemes; three kinetic signals alone can't tell
   them apart. Planning history can: a building with a real application on
-  record is a scheme; a pub with none (or only minor consents) is not.
+  record is a scheme; a pub with none (or only a tree-works/advertisement
+  consent) is not.
 
-  Source, attempted in the brief's stated preference order — from THIS
-  sandbox, all three were checked and are unreachable (egress-blocked):
-    1. southwark.gov.uk/download-our-planning-datasets — a bulk/queryable
-       dataset would be more robust than what follows. CHECK THIS MANUALLY
-       before trusting the scrape below.
-    2. Planning London Datahub (GLA) — a real API, if it covers Southwark.
-       Also unchecked from here.
-    3. THIS FILE: Idox Public Access address search (planning.southwark.gov.uk),
-       parsed with the same <li class="searchresult"> convention already
-       proven (structurally) against southwarkDemolition.ts's weekly list.
+  Source, revised preference order after manual investigation found better
+  options than the original scrape-first plan:
+    1. planning.data.gov.uk (national Planning Data Platform, MHCLG) —
+       UNCONFIRMED whether it covers application-level records at all (see
+       planningDataGovUk.ts). This sandbox could not check: planning.data.gov.uk
+       AND bare www.gov.uk are both egress-blocked here, same as every
+       council site tried before. Background knowledge, not verified live:
+       this platform has historically been spatial/policy data (conservation
+       areas, article 4 directions, listed buildings), not a live application
+       register — real reason to doubt it has what's needed here, separate
+       from just "couldn't check." Treat planningDataGovUk.ts as a PROBE, not
+       a proven source, until a live run confirms it one way or the other.
+    2. THIS FILE: Southwark's own Idox Public Access register
+       (planning.southwark.gov.uk), full history, no date window — the
+       authoritative source, and already proven structurally against
+       southwarkDemolition.ts's weekly list (same <li class="searchresult">
+       markup, now shared via idox.ts).
+    3. Third-party mirrors (Plota, PlanWatch) — fine for a manual spot-check,
+       NOT built against here. Their windows are limited (90 days) and it's
+       someone else's scrape, not a production dependency.
+
+  CRITICAL — full history, never a rolling window. A manual check nearly
+  reached a wrong verdict because a default UI view showed only the last 90
+  days; the real Southwark Bridge Road application is dated June 2026 for an
+  SPV formed January 2025 — 17 months apart. searchVariants() below sets NO
+  date-bound parameter (an unset filter, not a guessed "unlimited" override —
+  guessing a specific param name that the server silently ignores would give
+  false confidence). checkPlanningForAddress() instead makes this checkable:
+  it unions results across every search variant (not just the first that
+  works) and reports the returned date SPAN. If that span looks suspiciously
+  narrow/recent for a real address, that's the signal to go inspect Idox's
+  actual advanced-search form for a hidden default and fix it — not to trust
+  silence.
 
   Structural uncertainty, not hidden: Idox's ADDRESS/KEYWORD search sometimes
-  needs a server-side session, unlike the weekly list (a stateless, date-
-  parameterised GET). searchVariants() tries GET-only patterns first;
-  planning-probe.ts reports which one — if any — actually returns a real
-  results page. Do not trust this file's output until the probe confirms it,
-  and DO NOT skip straight to `planningCheck.ts` without running the probe
-  first if the check's own two verification cases behave unexpectedly.
+  needs a server-side session, unlike the weekly list (a stateless GET).
+  planning-probe.ts reports which variant — if any — actually returns a real
+  results page, for BOTH sources above, before planningCheck.ts is trusted.
 */
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
@@ -38,7 +59,14 @@ export interface PlanningSearchVariant {
   url: string
 }
 
-/** GET-only search URL candidates, most-likely-to-work-without-a-session first. */
+/**
+ * GET-only search URL candidates, most-likely-to-work-without-a-session
+ * first. Deliberately carry NO date-range parameter — omitting a filter
+ * requests full history; guessing a specific "from 1990" override param
+ * name risks the server silently ignoring an unrecognised parameter while
+ * looking like full history was requested. checkPlanningForAddress's date-
+ * span diagnostic is the real check on whether that assumption holds.
+ */
 export function planningSearchVariants(address: string): PlanningSearchVariant[] {
   const q = encodeURIComponent(address)
   return [
@@ -67,13 +95,17 @@ export async function fetchPlanningSearchHtml(url: string): Promise<string> {
 // ── application-type classification (from proposal text — Idox rarely
 // exposes a clean structured "type" field on the results list itself) ──────
 
-export type ApplicationType = 'preApplication' | 'changeOfUse' | 'full' | 'listedBuilding' | 'minor' | 'advertisement' | 'other'
+export type ApplicationType = 'preApplication' | 'changeOfUse' | 'full' | 'listedBuilding' | 'minor' | 'treeWorks' | 'advertisement' | 'other'
 
 const TYPE_PATTERNS: { pattern: RegExp; type: ApplicationType }[] = [
   { pattern: /\bpre[- ]?application\b/i, type: 'preApplication' },
   { pattern: /change of use/i, type: 'changeOfUse' },
   { pattern: /listed building consent/i, type: 'listedBuilding' },
   { pattern: /advertisement consent/i, type: 'advertisement' },
+  // Confirmed real example: 68 Borough Road's ONLY planning record ever is
+  // "Works to a Tree in a Conservation Area" — the exact false-positive-
+  // avoidance case this type exists for. TPO = Tree Preservation Order.
+  { pattern: /works? to a?n? ?tree|tree preservation order|\btpo\b/i, type: 'treeWorks' },
   { pattern: /full planning permission|erection of|redevelopment|demolition and/i, type: 'full' },
   { pattern: /minor material amendment|non[- ]material amendment|householder/i, type: 'minor' },
 ]
@@ -85,15 +117,17 @@ export function classifyApplicationType(description: string): ApplicationType {
 
 /** Relative development-signal strength — highest for a pre-app (the
  *  brief's "highest-value planning signal", when one is ever public),
- *  lowest for an advertisement consent. Used for eyeballing, not scoring —
- *  the graph engine already treats every planningApplication signal as one
- *  kinetic layer regardless of type; type differentiates within that. */
+ *  lowest for tree/advertisement consent (routine, not development). Used
+ *  for eyeballing, not scoring — the graph engine already treats every
+ *  planningApplication signal as one kinetic layer regardless of type;
+ *  type differentiates within that. */
 export const APPLICATION_TYPE_STRENGTH: Record<ApplicationType, number> = {
   preApplication: 5,
   changeOfUse: 4,
   full: 3,
   listedBuilding: 2,
   minor: 1,
+  treeWorks: 0,
   advertisement: 0,
   other: 1,
 }
@@ -144,22 +178,35 @@ export function planningSignalForBuilding(row: MatchedPlanningRow, buildingId: s
 
 export interface PlanningCheckResult {
   checked: boolean
-  variantUsed?: string
+  /** Every variant that actually returned a real results page — plural,
+   *  because results are UNIONED across all of them (see below), not just
+   *  the first one that works. */
+  variantsUsed: string[]
   matches: MatchedPlanningRow[]
+  /** Oldest/newest date among the matches, if any have a parseable date.
+   *  A narrow, suspiciously-recent span on a real address is the signal to
+   *  go inspect Idox's actual form for a hidden default window — not to
+   *  trust that "no date param was sent" means "full history was returned". */
+  dateSpan?: { earliest: string; latest: string }
   error?: string
 }
 
 /**
- * Safe, per-address planning check: tries each search variant until one
- * returns a real results page, matches rows to the target address, and
- * NEVER throws — a failed/undiagnosable check comes back `checked: false`
- * with the error explained, so absence-because-we-couldn't-check is never
- * confused with absence-because-we-confirmed-there's-nothing (per the
- * standing rule: absence renders as genuinely empty, never padded — and
- * that includes not padding a failed check into a false "empty" result).
+ * Safe, per-address planning check. Runs EVERY search variant — not just
+ * the first that returns a real page — and unions their rows (deduped by
+ * reference): different Idox entry points can apply different defaults, so
+ * relying on only one risks silently missing older records exactly the way
+ * the brief's own manual check nearly did. Never throws: a failed/
+ * undiagnosable check comes back `checked: false` with the error explained,
+ * so absence-because-we-couldn't-check is never confused with absence-
+ * because-we-confirmed-there's-nothing.
  */
 export async function checkPlanningForAddress(address: string): Promise<PlanningCheckResult> {
   const errors: string[] = []
+  const variantsUsed: string[] = []
+  const seen = new Set<string>()
+  const rows: IdoxResultRow[] = []
+
   for (const variant of planningSearchVariants(address)) {
     try {
       const html = await fetchPlanningSearchHtml(variant.url)
@@ -167,12 +214,28 @@ export async function checkPlanningForAddress(address: string): Promise<Planning
         errors.push(`${variant.name}: page did not look like a real results page (session/login/error page?)`)
         continue
       }
-      const rows = parseIdoxResultList(html)
-      const matches = matchPlanningRows(rows, address)
-      return { checked: true, variantUsed: variant.name, matches }
+      variantsUsed.push(variant.name)
+      for (const row of parseIdoxResultList(html)) {
+        const key = row.reference || `${row.address}|${row.description}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        rows.push(row)
+      }
     } catch (err) {
       errors.push(`${variant.name}: ${(err as Error).message}`)
     }
   }
-  return { checked: false, matches: [], error: errors.join(' | ') }
+
+  if (variantsUsed.length === 0) {
+    return { checked: false, variantsUsed: [], matches: [], error: errors.join(' | ') }
+  }
+
+  const matches = matchPlanningRows(rows, address)
+  const isoDates = matches
+    .map((m) => (m.dateText ? ukDateToIso(m.dateText) : undefined))
+    .filter((d): d is string => Boolean(d))
+    .sort()
+  const dateSpan = isoDates.length ? { earliest: isoDates[0], latest: isoDates[isoDates.length - 1] } : undefined
+
+  return { checked: true, variantsUsed, matches, dateSpan }
 }

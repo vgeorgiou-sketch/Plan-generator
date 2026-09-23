@@ -59,7 +59,8 @@ and run where egress exists.
 | `sector.ts` | Part 1 — heuristic sector/conversion tagging from company name + matched prior EPC use | `sweep.test.ts` ✓ |
 | `sweep.ts` | Part 1 — structured Southwark discovery (SIC × location × date), full enrichment (PSC/charges/officers/filings) per hit, built as a `../graph-model` cluster | `sweep.test.ts` ✓ |
 | `idox.ts` | Shared Idox Public Access result-list parser (`<li class="searchresult">`) — used by both `southwarkDemolition.ts` and `planning.ts` | `planning.test.ts` ✓ |
-| `planning.ts` | The discriminator: `planningApplication` signal source. Application-type classification, address matching, never fabricates a date | `planning.test.ts` ✓ |
+| `planning.ts` | The discriminator: `planningApplication` signal source (Idox, full-history). Application-type classification, address matching, never fabricates a date, unions results across every search variant | `planning.test.ts` ✓ |
+| `planningDataGovUk.ts` | Probe-only client for `planning.data.gov.uk` — unconfirmed whether it covers application-level data | — (probe) |
 
 ```bash
 node --experimental-strip-types puller/leadTime.test.ts
@@ -97,31 +98,54 @@ not a development scheme. Those three signals alone can't tell a pub from a
 scheme; planning history can. See `planning.ts`'s file header for the full
 reasoning and `graph-model/conclusion.ts`'s scoring rule.
 
-**Source, checked in the brief's stated preference order — all three
-attempted live from the sandbox that wrote this, all three egress-blocked**
-(`southwark.gov.uk`, `london.gov.uk`, and `planning.southwark.gov.uk` all
-returned `EGRESS_BLOCKED`, not "doesn't exist"):
+**Source, revised preference order after manual investigation found better
+options — all attempted live via `WebFetch` from the sandbox that wrote
+this, ALL egress-blocked** (`planning.data.gov.uk`, bare `www.gov.uk`, and
+`planning.southwark.gov.uk` all returned `EGRESS_BLOCKED`, not "doesn't exist"):
 
-1. Southwark's `download-our-planning-datasets` bulk dataset — **unchecked**, would
-   be more robust than what follows. Check this manually before trusting the scrape.
-2. Planning London Datahub (GLA) — **unchecked**, a real API if it covers Southwark.
-3. **What's actually built**: Idox Public Access address search
-   (`planning.ts`), parsing the same `<li class="searchresult">` markup
-   already used (structurally) for the weekly list, now shared via `idox.ts`.
+1. `planning.data.gov.uk` (national Planning Data Platform, MHCLG) —
+   **unconfirmed** whether it covers application-level records at all
+   (`planningDataGovUk.ts`). Background knowledge, not verified live: this
+   platform has historically been spatial/policy data (conservation areas,
+   article 4 directions, listed buildings), not a live application register
+   — real reason to doubt it, separate from just "couldn't check." Built as
+   a **probe only** (`planning-probe.ts`'s first section) — not load-bearing
+   until a live run confirms it one way or the other.
+2. **What's actually built and working**: Southwark's own Idox Public
+   Access register (`planning.ts`), full history, no date window — parsing
+   the same `<li class="searchresult">` markup already used (structurally)
+   for the weekly list, now shared via `idox.ts`.
+3. Third-party mirrors (Plota, PlanWatch) — spot-check only, deliberately
+   not built against (their windows are 90 days; someone else's scrape
+   isn't a production dependency).
 
-**Genuine structural uncertainty, not hidden**: Idox's address/keyword search
-sometimes needs a server-side session, unlike the weekly list's stateless,
-date-parameterised GET. `planning-probe.ts` tries GET-only patterns and
-reports whether either actually returns a real results page for **both**
-verification addresses — run it before `planningCheck.ts`, and definitely
-before trusting a live sweep's planning column.
+**CRITICAL — full history, never a rolling window.** A manual check nearly
+reached a wrong verdict on a default 90-day view; the real Southwark Bridge
+Road application is 17 months after the SPV that formed it. `planning.ts`'s
+search variants carry NO date-bound parameter (omission requests full
+history; guessing a specific override param name that the server silently
+ignores would be false confidence, not a fix). `checkPlanningForAddress`
+goes further: it unions results across **every** search variant instead of
+stopping at the first that returns a page, and reports the returned date
+**span** — proven in `planning.test.ts` with a mocked fetch where one
+variant returns nothing and the other has the real, 3-year-old record; the
+union still finds it.
 
-**Verification, per the brief**: `planningCheck.ts` runs both known cases —
-68 Borough Road (The Ship — expected to stay quiet) and 38–48 Southwark
-Bridge Road (expected to light up with the 2026 co-living resubmission) —
-and reports the exact PASS/FAIL contract. The source is working correctly
-when the pub stays quiet and the real case lights up; that contrast is the
-proof, the same shape as the 489-day cross-check that proved the graph engine.
+**Verification, per the brief — reproducing exact manually-confirmed
+answers, not just "found something plausible"**: `planningCheck.ts` runs
+both known cases and checks for the EXACT reference:
+- 68 Borough Road (The Ship): ref **23/AP/3411**, 8 Dec 2023, "Works to a
+  Tree in a Conservation Area" — its only planning record ever. Must
+  classify as `treeWorks`, ranked with advertisement consent, NOT development.
+- 38–48 Southwark Bridge Road: ref **26/00849/OBS**, 10 June 2026, "Partial
+  demolition, extension and change of use of existing building for
+  co-living use". Must classify as `changeOfUse` and light the planning cell.
+
+Both references are real, given, and reproduced exactly in `planning.test.ts`
+— the same proof pattern as the 489-day cross-check: a known answer the code
+must independently arrive at, not a synthetic example. (The related
+cross-boundary consultation to Tower Hamlets, `PA/26/00989/NC`, is noted but
+out of scope for this increment — a future neighbouring-authority signal path.)
 
 **Never fabricated**: `planningSignalForBuilding` refuses to emit a signal
 when no date can be parsed from the result row — proven in `planning.test.ts`.
