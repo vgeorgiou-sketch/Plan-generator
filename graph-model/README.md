@@ -16,13 +16,13 @@ of the showcase build — a separate brief covers the visual redesign.
 | `cluster.ts` | `detectClusters` — connected-component detection anchored at building nodes. No hand-written per-pattern rules; connectivity through cited edges is the only detector. |
 | `conclusion.ts` | The traffic-light scoring + prose engine: `scoreCluster`, `strengthFromScore`, `extractPublicContacts`, `buildConclusion`. |
 | `seed.ts` | The real 38–48 Southwark Bridge Road cluster, built FROM `../signal-model/seed.ts` (single source of truth — no re-typed dates/URLs). |
-| `validate.ts` | 34 assertions: synthetic mechanism proofs + the real seed cluster, including a cross-check that the independently-computed lead time (489 days) matches the already-proven Task 0 number exactly. |
+| `validate.ts` | 39 assertions: synthetic mechanism proofs + the real seed cluster, including a cross-check that the independently-computed lead time (489 days) matches the already-proven Task 0 number exactly, and that a planning-application signal is an INDEPENDENT second path to green (not just EPC). |
 | `render.ts` | Minimal plain-text render (`node --experimental-strip-types graph-model/render.ts`). No visual design here — that's a separate pass. |
 
 ## Run the checks
 
 ```bash
-node --experimental-strip-types graph-model/validate.ts   # 34 assertions, all pass
+node --experimental-strip-types graph-model/validate.ts   # 39 assertions, all pass
 node --experimental-strip-types graph-model/render.ts     # see the real cluster's conclusion
 ```
 
@@ -54,9 +54,16 @@ all three are distinct and none may be silently substituted for another).
 Hub Living Developments Limited (ceased) / Bridges Property Alternatives
 Fund VI GP LLP (active); SPV → owns → building; HUB → operates → building.
 3 distinct scorable layers (SPV + PSC + charge) → **amber**, exactly the
-brief's own worked example. Adding the still-pending EPC pressure signal
-(Task 1) flips it to 4 layers → **green** — proven with a synthetic addition
-in `validate.ts`, not asserted against data we don't have yet.
+brief's own worked example. **Two independent paths to green**, both proven
+with a synthetic addition in `validate.ts` (neither asserted against data we
+don't actually have yet): the still-pending EPC pressure signal (Task 1), or
+the still-pending planning-application signal (`../puller/planningCheck.ts`
+— the 2026 co-living resubmission). Either alone is a 4th distinct kinetic/
+pressure layer. This is also the exact mechanism that discriminates a real
+scheme from ordinary commerce: see `../puller/planning.ts`'s file header for
+why the wider sweep needed this — a pub (The Ship, 68 Borough Road) produces
+the identical SPV+charge+PSC shape and caps at amber with no planning signal
+to push it further.
 
 4 public contacts surface (all entity-level: the SPV, both PSC controllers,
 the operator). **No individual director names yet** — that needs

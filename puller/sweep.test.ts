@@ -96,7 +96,7 @@ console.log('\nbuildCandidateGraph — conversion case (office EPC + co-living S
     filings: [],
   }
 
-  const r = buildCandidateGraph(candidate, { isLargeCommercial: true })
+  const r = buildCandidateGraph(candidate, { matchedEpc: { isLargeCommercial: true } })
 
   assert('building node built from the registered office address', Boolean(r.graph.nodes.find((n) => n.id === r.buildingNodeId)?.label.includes('Bankside Row')))
   assert('owns edge confidence is 0.5 — registered office ≠ confirmed site', r.graph.edges.find((e) => e.type === 'owns')?.confidence === 0.5)
@@ -151,7 +151,7 @@ console.log('\nrankCandidates — conversion/commercial lead, nothing discarded'
 {
   const conversionCandidate = buildCandidateGraph(
     { ...mkCandidate({ number: '18000001', company_name: 'Peckham Student Living SPV Ltd', address_snippet: '20 Peckham High St, SE15 5RS' }) },
-    { isLargeCommercial: true },
+    { matchedEpc: { isLargeCommercial: true } },
   )
   const officeCandidate = buildCandidateGraph({ ...mkCandidate({ number: '18000002', company_name: 'Camberwell Offices Ltd', address_snippet: '30 Camberwell Rd, SE5 0EG' }) })
   const wideCandidate = buildCandidateGraph({ ...mkCandidate({ number: '18000003', company_name: 'Southwark Ventures Nine LLP', address_snippet: '40 Old Kent Rd, SE1 4AA' }) })
@@ -161,6 +161,62 @@ console.log('\nrankCandidates — conversion/commercial lead, nothing discarded'
   assert('the conversion signal is ranked first', ranked[0].result.conversion.isConversion === true, ranked.map((r) => r.result.companyNodeId))
   assert('commercial office is ranked second', ranked[1].result.sector.sector === 'commercialOffice')
   assert('the unhinted wide/mixed-use candidate is ranked last, but STILL present', ranked[2].result.sector.sector === 'mixedUse')
+}
+
+console.log('\nplanning as the discriminator — the actual fix for the "The Ship" false positive')
+{
+  // Same SPV/charge/PSC shape as a real scheme, on purpose — the point is
+  // that these three signals alone cannot tell a pub from a development.
+  // Two DIFFERENT addresses (that's the whole point) — same activity shape.
+  const sameActivity = (number: string, name: string, address: string) => mkCandidate({ number, company_name: name, address_snippet: address })
+
+  const pubLikeCandidate: EnrichedCandidate = {
+    ...sameActivity('19000001', 'BOROUGH ROAD HOSPITALITY SPV LTD', '68 Borough Road, SE1 1JX'),
+    psc: [{ name: 'True Pub Holdings Ltd', kind: 'corporate-entity-person-with-significant-control', notified_on: '2023-02-01' }],
+    charges: [{ charge_code: 'P1', status: 'outstanding', created_on: '2023-02-15', persons_entitled: [{ name: 'High Street Bank plc' }] }],
+  }
+  const noPlanning = buildCandidateGraph(pubLikeCandidate) // no matchedPlanning passed — exactly what a real check against The Ship should find
+
+  const schemeLikeCandidate: EnrichedCandidate = {
+    ...sameActivity('19000002', 'RIVERSIDE OFFICES SPV LTD', '10 Riverside Way, SE1 0AA'),
+    psc: [{ name: 'Riverside Capital LLP', kind: 'corporate-entity-person-with-significant-control', notified_on: '2026-02-01' }],
+    charges: [{ charge_code: 'S1', status: 'outstanding', created_on: '2026-02-15', persons_entitled: [{ name: 'Development Bank plc' }] }],
+  }
+  const withPlanning = buildCandidateGraph(schemeLikeCandidate, {
+    matchedPlanning: [
+      {
+        reference: '26/AP/0900',
+        address: '10 Riverside Way SE1',
+        description: 'Change of use from office to residential',
+        detailUrl: 'https://planning.southwark.gov.uk/x',
+        dateText: '01/03/2026',
+        matchScore: 0.95,
+        applicationType: 'changeOfUse',
+      },
+    ],
+  })
+
+  assert('no planning match → owns edge stays a guess at 0.5', noPlanning.graph.edges.find((e) => e.type === 'owns')?.confidence === 0.5)
+  assert('a planning match corroborates the site → owns edge rises to 0.9', withPlanning.graph.edges.find((e) => e.type === 'owns')?.confidence === 0.9)
+
+  const buildingNoPlanning = noPlanning.graph.nodes.find((n) => n.id === noPlanning.buildingNodeId)!
+  const buildingWithPlanning = withPlanning.graph.nodes.find((n) => n.id === withPlanning.buildingNodeId)!
+  assert('pub-like candidate: building carries NO planningApplication signal', buildingNoPlanning.signals.every((s) => s.layer !== 'planningApplication'))
+  assert('scheme-like candidate: building DOES carry a planningApplication signal', buildingWithPlanning.signals.some((s) => s.layer === 'planningApplication'))
+  assert('planning signal is attached to the BUILDING, not the company', withPlanning.graph.nodes.find((n) => n.id === withPlanning.companyNodeId)!.signals.every((s) => s.layer !== 'planningApplication'))
+
+  // The actual discrimination: run both through the same conclusion engine
+  // that scored the seed. Identical SPV+charge+PSC shape; only planning differs.
+  const ranked = rankCandidates([noPlanning, withPlanning], '2026-06-01')
+  const pubResult = ranked.find((r) => r.result.companyNodeId === 'company:19000001')!
+  const schemeResult = ranked.find((r) => r.result.companyNodeId === 'company:19000002')!
+  assert(
+    'the candidate WITH a planning match strictly outranks the identical one without — this is the actual fix',
+    ranked.indexOf(schemeResult) < ranked.indexOf(pubResult),
+    ranked.map((r) => [r.result.companyNodeId, r.conclusion.strength]),
+  )
+  assert('the scheme-like cluster reaches green (4 distinct kinetic layers: SPV+PSC+charge+planning)', schemeResult.conclusion.strength === 'green', schemeResult.conclusion.strength)
+  assert('the pub-like cluster, with the SAME company-side activity, caps at amber with no planning', pubResult.conclusion.strength === 'amber', pubResult.conclusion.strength)
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)

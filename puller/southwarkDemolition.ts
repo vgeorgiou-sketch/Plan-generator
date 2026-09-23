@@ -5,54 +5,25 @@
   the council uses — not aggressive scraping. Check
   southwark.gov.uk/download-our-planning-datasets for bulk data first.
 
-  parseWeeklyList is a pure function, unit-tested against a fixture. The live
-  fetch is thin and clearly marked as needing verification against real HTML.
+  The actual HTML parsing lives in idox.ts (shared with planning.ts — both
+  read the same Idox result-list markup). This file keeps its own exported
+  names (WeeklyListRow, parseWeeklyList) for backward compatibility with
+  existing callers/tests.
 */
 
+import { parseIdoxResultList, type IdoxResultRow } from './idox.ts'
 import type { Signal } from '../signal-model/types.ts'
 import type { KineticHit } from './crossReference.ts'
 
 const BASE = 'https://planning.southwark.gov.uk/online-applications'
 
-export interface WeeklyListRow {
-  reference: string
-  address: string
-  description: string
-  detailUrl: string
-}
+export type WeeklyListRow = IdoxResultRow
 
 const DEMOLITION = /\bdemolition\b|\bdemolish\b|s(?:ection)?\s?80\b|prior notification of demolition/i
 
-/**
- * Parse the Idox Public Access weekly/search results HTML into rows.
- * Tolerant by design — Idox markup varies between installs and versions, so
- * this must be checked against Southwark's live HTML before being trusted.
- */
+/** Parse the Idox Public Access weekly-list HTML into rows. */
 export function parseWeeklyList(html: string): WeeklyListRow[] {
-  const rows: WeeklyListRow[] = []
-  // Each result is an <li class="searchresult"> … </li> block.
-  const blocks = html.match(/<li[^>]*class="[^"]*searchresult[^"]*"[\s\S]*?<\/li>/gi) ?? []
-  for (const block of blocks) {
-    const anchor = block.match(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i)
-    if (!anchor) continue
-    const href = anchor[1].replace(/&amp;/g, '&')
-    const description = stripTags(anchor[2])
-    // Address usually sits in the following <p class="address"> or metaInfo line.
-    const addrMatch = block.match(/<p[^>]*class="[^"]*address[^"]*"[^>]*>([\s\S]*?)<\/p>/i)
-    const address = addrMatch ? stripTags(addrMatch[1]) : ''
-    const refMatch = (description + ' ' + address).match(/\b\d{2}\/[A-Z]{2}\/\d{3,5}\b/)
-    rows.push({
-      reference: refMatch ? refMatch[0] : '',
-      address,
-      description,
-      detailUrl: href.startsWith('http') ? href : `${BASE}/${href.replace(/^\//, '')}`,
-    })
-  }
-  return rows
-}
-
-function stripTags(s: string): string {
-  return s.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim()
+  return parseIdoxResultList(html, BASE)
 }
 
 /** Keep only rows whose description reads as a demolition notice. */

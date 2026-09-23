@@ -198,6 +198,28 @@ console.log('\nconfirmed cluster — 38–48 Southwark Bridge Road (real, not sy
   const scoreWithEpc = scoreCluster(withEpc, SBR_ANALYSIS_ASOF)
   assert('adding the pending EPC pressure signal → 4 distinct layers', scoreWithEpc.distinctLayers === 4, scoreWithEpc)
   assert('…which flips the verdict to green, once Task 1 lands', strengthFromScore(scoreWithEpc) === 'green', scoreWithEpc)
+
+  // A second, independent throughline: planningApplication is ALSO kinetic
+  // (per LAYER_CATEGORY — it's evidence of active intent, not a standing
+  // condition), so it can flip amber → green on its own, without EPC. This
+  // is the real 2026 resubmission-to-co-living application, once pulled
+  // (puller/planningCheck.ts) — proven synthetically here, not asserted
+  // against the seed until a live check confirms it (same discipline as the
+  // EPC case above). Note this is a DIFFERENT mechanism from signal-model's
+  // binary isConverged rule, which specifically needs a pressure layer —
+  // planning alone would satisfy THIS engine's layer-count threshold but
+  // not that one, because both are kinetic.
+  const withPlanning: typeof cluster = {
+    ...cluster,
+    nodes: cluster.nodes.map((n) =>
+      n.id === cluster.buildingId
+        ? { ...n, signals: [...n.signals, sig({ layer: 'planningApplication', factType: 'filed', confidence: 1, observedAt: SBR_ANALYSIS_ASOF })] }
+        : n,
+    ),
+  }
+  const scoreWithPlanning = scoreCluster(withPlanning, SBR_ANALYSIS_ASOF)
+  assert('adding the pending planning-application signal ALSO → 4 distinct layers', scoreWithPlanning.distinctLayers === 4, scoreWithPlanning)
+  assert('…which ALSO flips the verdict to green — planning is the discriminator, not just a nice-to-have', strengthFromScore(scoreWithPlanning) === 'green', scoreWithPlanning)
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)

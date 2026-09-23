@@ -39,9 +39,10 @@ import { findSouthwarkRealEstateCandidates } from './spvScan.ts'
 import { addressString } from './kineticSignals.ts'
 import { checkConversionSignal, inferSectorFromName, sectorRank, SECTOR_LABEL, type ConversionCheck, type SectorTag } from './sector.ts'
 import { isOwnershipChange, type ChFiling } from './leadTime.ts'
+import { checkPlanningForAddress, planningSignalForBuilding, type MatchedPlanningRow } from './planning.ts'
 import { buildConclusion } from '../graph-model/conclusion.ts'
 import { detectClusters } from '../graph-model/cluster.ts'
-import type { Conclusion, Graph, GraphEdge, GraphNode } from '../graph-model/types.ts'
+import type { Conclusion, Graph, GraphEdge, GraphNode, SignalStrength } from '../graph-model/types.ts'
 import type { Signal, SignalLayer } from '../signal-model/types.ts'
 import { fileURLToPath } from 'node:url'
 
@@ -114,21 +115,35 @@ export interface CandidateGraphResult {
    *  own rule) — a fast eyeball of "is this entity actually doing anything",
    *  independent of the graph's own scoring. */
   ownershipChangeFilings: number
+  /** Whether a planning check was actually run for this candidate (vs. never
+   *  attempted) — see the honesty note on `checked` in planning.ts. */
+  planningChecked: boolean
+}
+
+export interface CandidateContext {
+  /** A Task-1-derived prior-use match for this address (or null/omit — Part 1
+   *  works without it, conversion just stays unconfirmed). */
+  matchedEpc?: { isLargeCommercial: boolean } | null
+  /**
+   * Planning applications matched to this address — the discriminator axis.
+   * A real building lighting up several kinetic layers (SPV+charge+PSC) AND
+   * a genuine planning application is a scheme; the same layer count with NO
+   * planning is exactly the pattern ordinary commerce (a pub refinancing)
+   * produces. Passing this in also corroborates the tentative building
+   * address — see the 'owns' edge confidence below.
+   */
+  matchedPlanning?: MatchedPlanningRow[] | null
 }
 
 /**
  * Turn one enriched candidate into a graph fragment: a company node (its own
  * incorporation/PSC/charge facts), a tentative building node (from its
- * registered office address — NOT a confirmed site address, see the 'owns'
- * edge's confidence), and controller/lender/director nodes with cited edges.
- *
- * `matchedEpc`: pass a Task-1-derived prior-use match for this address (or
- * null/omit — Part 1 works without it, conversion just stays unconfirmed).
+ * registered office address — NOT a confirmed site address unless a matched
+ * planning application corroborates it, see the 'owns' edge below), and
+ * controller/lender/director nodes with cited edges.
  */
-export function buildCandidateGraph(
-  c: EnrichedCandidate,
-  matchedEpc?: { isLargeCommercial: boolean } | null,
-): CandidateGraphResult {
+export function buildCandidateGraph(c: EnrichedCandidate, context: CandidateContext = {}): CandidateGraphResult {
+  const { matchedEpc, matchedPlanning } = context
   const companyNumber = c.hit.company_number
   const companyName = pickCompanyName(c.profile.company_name, c.hit.company_name)
   const companyNodeId = `company:${companyNumber}`
@@ -166,6 +181,13 @@ export function buildCandidateGraph(
     }
   }
 
+  // A matched planning application corroborates the registered office as the
+  // real site (the standing rule: match the real site, not a registered
+  // office) — the same reason the seed's own 'owns' edge sits at 0.9, not
+  // lower. Without one, this stays a guess at 0.5.
+  const planningMatches = matchedPlanning ?? []
+  const ownsConfidence = planningMatches.length > 0 ? 0.9 : 0.5
+
   const edges: GraphEdge[] = [
     {
       from: companyNodeId,
@@ -173,12 +195,19 @@ export function buildCandidateGraph(
       type: 'owns',
       sourceUrl: companyUrl,
       observedAt: incorporatedOn,
-      // Registered office ≠ confirmed site address — this is a WEAKER link
-      // than the seed's 0.9 (which had a matching planning application too).
-      // A planning-application pull for this address would corroborate it.
-      confidence: 0.5,
+      confidence: ownsConfidence,
     },
   ]
+
+  // Planning signals belong to the BUILDING (the site), not the company —
+  // unlike every other signal here, which is filed against the corporate
+  // entity. This is the discriminator: SPV/charge/PSC activity alone can't
+  // tell a development scheme from ordinary commerce (a pub refinancing),
+  // but a real planning application on the SITE can.
+  for (const m of planningMatches) {
+    const sig = planningSignalForBuilding(m, buildingNodeId)
+    if (sig) buildingNode.signals.push(sig) // null means no parseable date — never fabricated, so nothing added
+  }
 
   for (const p of c.psc) {
     if (!p.name) continue // e.g. a redacted "super-secure-person" — no name to cite, honest skip
@@ -246,7 +275,15 @@ export function buildCandidateGraph(
   const conversion = checkConversionSignal(sector, matchedEpc ?? null)
   const ownershipChangeFilings = c.filings.filter((f) => isOwnershipChange(f, { isLLP: /^(OC|SO|NC)/i.test(companyNumber) })).length
 
-  return { graph: { nodes, edges }, buildingNodeId, companyNodeId, sector, conversion, ownershipChangeFilings }
+  return {
+    graph: { nodes, edges },
+    buildingNodeId,
+    companyNodeId,
+    sector,
+    conversion,
+    ownershipChangeFilings,
+    planningChecked: matchedPlanning !== undefined,
+  }
 }
 
 /** Merge several candidate graph fragments into one graph (dedup by node id —
@@ -273,8 +310,16 @@ export interface RankedCluster {
   rank: number
 }
 
-/** Score, conclude and rank every candidate's cluster — commercial-office
- *  and conversion signals lead, per the brief; nothing is discarded. */
+const STRENGTH_ORDER: Record<SignalStrength, number> = { green: 0, amber: 1, red: 2 }
+
+/**
+ * Score, conclude and rank every candidate's cluster — commercial-office
+ * and conversion signals lead, per the brief; nothing is discarded. Within
+ * the same sector tier, sorted by conclusion STRENGTH next: this is the
+ * actual point of feeding convergence more signals — a thin, single-layer
+ * cluster (ordinary commerce) must rank below a converging one of the same
+ * sector, not sit at the mercy of insertion order.
+ */
 export function rankCandidates(results: CandidateGraphResult[], asOf: string): RankedCluster[] {
   const graph = mergeGraphs(results)
   const clusters = detectClusters(graph)
@@ -287,7 +332,12 @@ export function rankCandidates(results: CandidateGraphResult[], asOf: string): R
       return conclusion ? { result, conclusion, rank: sectorRank(result.sector.sector, result.conversion.isConversion) } : null
     })
     .filter((x): x is RankedCluster => x !== null)
-    .sort((a, b) => a.rank - b.rank || (b.conclusion.leadTimeDays ?? 0) - (a.conclusion.leadTimeDays ?? 0))
+    .sort(
+      (a, b) =>
+        a.rank - b.rank ||
+        STRENGTH_ORDER[a.conclusion.strength] - STRENGTH_ORDER[b.conclusion.strength] ||
+        (b.conclusion.leadTimeDays ?? 0) - (a.conclusion.leadTimeDays ?? 0),
+    )
 }
 
 // ── orchestration (network — not runnable in this sandbox; see README) ────
@@ -306,7 +356,27 @@ async function main() {
   for (const hit of candidates) {
     console.log(`  enriching ${hit.company_name} (${hit.company_number})…`)
     const enriched = await enrichCandidate(hit)
-    results.push(buildCandidateGraph(enriched)) // no EPC universe wired in here — run Task 1 separately and pass matches in to unlock conversion detection
+    const address = addressString(enriched.profile.registered_office_address) || enriched.hit.address_snippet
+
+    // Planning is the discriminator (see planning.ts): a candidate that lights
+    // up SPV+charge+PSC but has no planning application is exactly the shape
+    // ordinary commerce (a pub refinancing) produces. A per-candidate failure
+    // here must never kill the whole sweep — it just leaves that candidate's
+    // planning cell genuinely empty, with the reason logged, not silently.
+    let matchedPlanning: MatchedPlanningRow[] | null = null
+    if (address) {
+      const planning = await checkPlanningForAddress(address).catch((err) => {
+        console.log(`    planning check failed (${(err as Error).message}) — leaving it unchecked, not "confirmed empty"`)
+        return null
+      })
+      if (planning) {
+        if (!planning.checked) console.log(`    planning check inconclusive: ${planning.error}`)
+        matchedPlanning = planning.matches
+      }
+    }
+
+    // no EPC universe wired in here — run Task 1 separately and pass matches in to unlock conversion detection
+    results.push(buildCandidateGraph(enriched, { matchedPlanning }))
   }
 
   const asOf = new Date().toISOString().slice(0, 10)
@@ -319,6 +389,7 @@ async function main() {
     console.log(`    ${conclusion.reasoning}`)
     console.log(`    sector basis: ${result.sector.basis} (${result.sector.confidence})`)
     console.log(`    conversion: ${result.conversion.reason}`)
+    console.log(`    planning: ${result.planningChecked ? 'checked (see evidence above for any match)' : 'not checked'}`)
     console.log('')
   }
 }
