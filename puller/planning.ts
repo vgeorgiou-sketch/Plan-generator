@@ -52,7 +52,7 @@
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
 import { matchAddress } from './addressMatch.ts'
-import { collectCookiePairs, detectProxyUrl, proxyDispatcher, resolveWorkingTlsAgent, BOT_USER_AGENT } from './netEnv.ts'
+import { collectCookiePairs, detectProxyUrl, proxyDispatcher, BOT_USER_AGENT } from './netEnv.ts'
 import type { Signal } from '../signal-model/types.ts'
 
 export interface PlanningSearchVariant {
@@ -86,15 +86,6 @@ export interface FetchPlanningOptions {
   cookie?: string
 }
 
-/** A corporate proxy takes priority when configured; otherwise fall back to
- *  whichever safe TLS variant actually completes a handshake with this host
- *  (see netEnv.ts — confirmed necessary for planning.southwark.gov.uk,
- *  which sits behind a Citrix NetScaler that Node/undici's OpenSSL-based
- *  TLS stack cannot negotiate with using its untouched defaults). */
-async function resolveDispatcher(url: string) {
-  return proxyDispatcher() ?? (await resolveWorkingTlsAgent(url))
-}
-
 export interface PlanningPageResult {
   html: string
   /** "name=value" pairs from this response's Set-Cookie header(s) — a
@@ -103,7 +94,7 @@ export interface PlanningPageResult {
 }
 
 async function fetchPlanningPage(url: string, opts: FetchPlanningOptions = {}): Promise<PlanningPageResult> {
-  const dispatcher = await resolveDispatcher(url)
+  const dispatcher = proxyDispatcher()
   const headers: Record<string, string> = { 'User-Agent': opts.userAgent ?? BOT_USER_AGENT }
   if (opts.cookie) headers['Cookie'] = opts.cookie
 
@@ -119,9 +110,10 @@ async function fetchPlanningPage(url: string, opts: FetchPlanningOptions = {}): 
       'Southwark planning search request failed. If this address opens fine in a browser, the ' +
         'likely cause is NOT that the site is unreachable — check: (1) a corporate proxy the browser ' +
         `uses silently (set HTTPS_PROXY${detectProxyUrl() ? ` — one IS detected: ${detectProxyUrl()}, but the connection still failed` : ' — none is currently set'}); ` +
-        '(2) a TLS-negotiation incompatibility — confirmed before for this exact host (a Citrix NetScaler ' +
-        'that Node/undici cannot handshake with on defaults); resolveWorkingTlsAgent should already have tried ' +
-        'the known fixes, so if this still fails, run puller/planning-probe.ts for a fresh diagnosis; ' +
+        '(2) a corporate TLS-inspection proxy — confirmed before for this exact host: run node WITH the ' +
+        '--use-system-ca flag (Node 22.9+), which trusts the OS certificate store the same way curl/the ' +
+        'browser does. If this script was already run with that flag and still fails, run ' +
+        'puller/planning-probe.ts for a fresh diagnosis; ' +
         `(3) User-Agent/session requirements — also tested by the same probe. Cause: ${(cause as Error).message}`,
     )
   }

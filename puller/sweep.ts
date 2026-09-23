@@ -15,7 +15,7 @@
   discovery is a different thing from the "HUB Accountants" failure mode,
   not a loophole around the same rule.
 
-  Run: node --env-file=.env --experimental-strip-types puller/sweep.ts
+  Run: node --use-system-ca --env-file=.env --experimental-strip-types puller/sweep.ts
   Needs CH_API_KEY + egress; fails loudly and prints nothing fabricated
   otherwise (verified in this sandbox — see the honest failure at the bottom
   of this file's own comments / the session transcript).

@@ -1,6 +1,6 @@
 /*
   Task 1 — EPC pressure layer, targeted at the confirmed seed building.
-  Run: node --env-file=.env --experimental-strip-types puller/task1.ts
+  Run: node --use-system-ca --env-file=.env --experimental-strip-types puller/task1.ts
 
   Searches the NEW EPC service by ADDRESS for 38–48 Southwark Bridge Road
   (precise for this validation), falling back to a Southwark council sweep if

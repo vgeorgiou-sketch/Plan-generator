@@ -3,7 +3,7 @@
 
     export CH_API_KEY=…            # https://developer.company-information.service.gov.uk/
     export EPC_API_KEY=…           # https://get-energy-performance-data.communities.gov.uk/
-    node --env-file=.env --experimental-strip-types puller/run.ts
+    node --use-system-ca --env-file=.env --experimental-strip-types puller/run.ts
 
   Deliverable: a plain list of CONVERGED Southwark buildings (a pressure layer
   confirmed by a kinetic layer) with their evidence — plus the Task 0 lead-time

@@ -29,19 +29,6 @@ function assert(name: string, cond: boolean, detail?: unknown) {
   }
 }
 
-// Every checkPlanningForAddress test below mocks globalThis.fetch and counts
-// calls. planning.ts falls back to resolveWorkingTlsAgent() — which makes
-// its OWN real fetch calls to probe TLS variants — whenever no proxy is
-// configured. Whether that's true depends on the AMBIENT environment the
-// test happens to run in (this very sandbox has one set), which would make
-// call-count assertions flake by machine. Pin it: force a (fake, unused —
-// fetch is fully mocked below, so nothing ever really connects through it)
-// proxy so proxyDispatcher() always short-circuits resolveDispatcher(),
-// keeping call counts deterministic regardless of the ambient environment.
-const savedProxyEnv = { HTTPS_PROXY: process.env.HTTPS_PROXY, https_proxy: process.env.https_proxy }
-process.env.HTTPS_PROXY = 'http://test-proxy.invalid:0'
-delete process.env.https_proxy
-
 // The REAL, manually-verified records for both known cases (not fictional).
 // Southwark Bridge Road: ref 26/00849/OBS, 10 June 2026, change of use to
 // co-living. The Ship: ref 23/AP/3411, 8 Dec 2023, tree works — its ONLY
@@ -234,10 +221,6 @@ console.log('\ncheckPlanningForAddress — genuinely inconclusive is never repor
     globalThis.fetch = originalFetch
   }
 }
-
-if (savedProxyEnv.HTTPS_PROXY === undefined) delete process.env.HTTPS_PROXY
-else process.env.HTTPS_PROXY = savedProxyEnv.HTTPS_PROXY
-if (savedProxyEnv.https_proxy !== undefined) process.env.https_proxy = savedProxyEnv.https_proxy
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)
 process.exit(failures === 0 ? 0 : 1)

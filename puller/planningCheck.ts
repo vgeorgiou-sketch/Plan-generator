@@ -1,7 +1,7 @@
 /*
   Planning history — verification, per the brief's own test.
 
-  Run: node --env-file=.env --experimental-strip-types puller/planningCheck.ts
+  Run: node --use-system-ca --env-file=.env --experimental-strip-types puller/planningCheck.ts
 
   Two known cases, both run — and both manually confirmed already against
   the full-history register, so this CLI's job is to reproduce EXACT known

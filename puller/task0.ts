@@ -1,6 +1,6 @@
 /*
   Task 0 — Southwark Bridge Road validation, end to end.
-  Run: node --env-file=.env --experimental-strip-types puller/task0.ts
+  Run: node --use-system-ca --env-file=.env --experimental-strip-types puller/task0.ts
 
   When the target pins a confirmed company number, Task 0 pulls THAT company
   directly (no keyword search — that caused a false positive) and computes the
