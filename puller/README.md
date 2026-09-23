@@ -311,6 +311,41 @@ while wiring this in: candidates now sort by conclusion **strength** within
 their sector tier, not just sector — previously two same-sector candidates
 had no strength-based ordering at all, which undercut the whole point.
 
+**Confirmed live at sweep scale: firing ~20 planning checks back-to-back
+tripped Southwark's rate limit** — HTTP 429 from roughly the 7th candidate
+onward, which the old code treated the same as any other failure
+("inconclusive", move on). That's wrong specifically for this signal:
+planning is the decisive discriminator, so silently under-checking most of
+a sweep undiscriminates the WHOLE ranking, not just one candidate. Two
+fixes, addressing both the cause and the symptom:
+- `sweep.ts` now paces its own planning checks 3–5s apart (jittered),
+  rather than firing them as fast as `enrichCandidate` returns — the
+  primary fix, keeping a sweep from tripping the limit in the first place.
+- `fetchPlanningPage` (`planning.ts`) now retries a 429 with backoff —
+  honouring a `Retry-After` header when the server sends one, otherwise
+  exponential backoff capped at `rateLimitConfig.maxDelayMs` — instead of
+  surfacing it as an ordinary error on the first hit. A *persistent* 429
+  (past `rateLimitConfig.maxRetries`) still eventually surfaces as a real,
+  explained failure naming the 429/rate-limit cause explicitly — never
+  silently reported as "confirmed empty," the same discipline every other
+  planning failure in this file already follows. Proven in
+  `planning.test.ts` with a mocked 429-then-succeeds case and a persistent-
+  429 case, both with the retry delays collapsed to near-zero so the test
+  itself stays fast without weakening what's actually under test.
+
+**Dedupe: two different companies can share one registered office** (a
+formation agent, an accountant's address — confirmed live: 68 Borough Road
+and the M7 Blue Fin building each printed twice). `mergeGraphs`/
+`detectClusters` already collapse them into ONE cluster at the graph level
+(same address → same `buildingNodeId` → same node ids), but `rankCandidates`
+used to still emit one output row per *originating candidate* rather than
+per building, so the identical address printed once per company registered
+there. Fixed to dedupe by `buildingNodeId`, keeping whichever candidate
+ranks best for that building — proven in `sweep.test.ts` with two
+synthetic companies sharing "68 Borough Road" reducing to exactly one
+ranked row, alongside a genuinely different address staying present (dedup
+is per-building, not over-aggressive).
+
 ## Part 1 — the wider sweep, and its own honest gaps
 
 `sweep.ts` extends Task 0 from one hand-fed building to structured discovery:

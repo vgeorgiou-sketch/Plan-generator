@@ -68,3 +68,7 @@ export function collectCookiePairs(res: Response): string[] {
   const raw = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []
   return raw.map((c) => c.split(';')[0].trim()).filter(Boolean)
 }
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}

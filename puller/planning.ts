@@ -56,11 +56,26 @@
   rather than guessing a field shape). Never crashes silently past a
   non-2xx: the response body is captured and surfaced in the error, since
   Idox's error pages tend to name the exact problem.
+
+  CONFIRMED live at sweep scale: firing 20 planning checks back-to-back
+  (sweep.ts, one per candidate) tripped Southwark's rate limit — HTTP 429
+  from roughly the 7th candidate onward, which the code then treated the
+  same as any other failure: "inconclusive", move on. That's wrong for
+  THIS signal specifically — planning is the decisive discriminator (see
+  this file's own opening paragraph), so silently under-checking most of a
+  sweep would undiscriminate the whole ranking, not just leave one gap.
+  fetchPlanningPage below now retries a 429 with backoff (honouring a
+  Retry-After header when the server sends one) instead of surfacing it as
+  an ordinary error on the first hit — a persistent 429 still eventually
+  surfaces as a real, explained failure after rateLimitConfig.maxRetries,
+  never silently swallowed. sweep.ts also paces its own calls (3-5s apart)
+  so a burst doesn't trip the limit in the first place — the retry here is
+  the safety net, not the primary fix.
 */
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, parseIdoxForm, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
 import { matchAddress, parseAddress, type ParsedAddress } from './addressMatch.ts'
-import { collectCookiePairs, detectProxyUrl, proxyDispatcher, BOT_USER_AGENT } from './netEnv.ts'
+import { collectCookiePairs, detectProxyUrl, proxyDispatcher, sleep, BOT_USER_AGENT } from './netEnv.ts'
 import { snippet } from './jsonResponse.ts'
 import type { Signal } from '../signal-model/types.ts'
 
@@ -115,42 +130,73 @@ export interface PlanningPageResult {
   cookies: string[]
 }
 
+/** Mutable on purpose (not `const` values) — planning.test.ts sets
+ *  `baseDelayMs`/`maxDelayMs` near-zero so retry tests don't actually wait
+ *  real seconds, while production keeps sensible real backoff. */
+export const rateLimitConfig = { baseDelayMs: 5000, maxDelayMs: 60_000, maxRetries: 4 }
+
+/** Retry-After is usually a plain integer number of seconds on this kind of
+ *  rate limit; the (rarer) HTTP-date form is left unhandled — falls through
+ *  to the exponential-backoff default rather than guessing a parse. */
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined
+  const seconds = Number(header)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined
+}
+
 async function fetchPlanningPage(url: string, opts: PlanningRequestInit = {}): Promise<PlanningPageResult> {
   const dispatcher = proxyDispatcher()
   const headers: Record<string, string> = { 'User-Agent': opts.userAgent ?? BOT_USER_AGENT }
   if (opts.cookie) headers['Cookie'] = opts.cookie
   if (opts.body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method: opts.method ?? 'GET',
-      headers,
-      body: opts.body,
-      redirect: 'follow',
-      ...(dispatcher ? { dispatcher } : {}),
-    } as RequestInit)
-  } catch (cause) {
-    throw new Error(
-      'Southwark planning search request failed. If this address opens fine in a browser, the ' +
-        'likely cause is NOT that the site is unreachable — check: (1) a corporate proxy the browser ' +
-        `uses silently (set HTTPS_PROXY${detectProxyUrl() ? ` — one IS detected: ${detectProxyUrl()}, but the connection still failed` : ' — none is currently set'}); ` +
-        '(2) a corporate TLS-inspection proxy — confirmed before for this exact host: run node WITH the ' +
-        '--use-system-ca flag (Node 22.9+), which trusts the OS certificate store the same way curl/the ' +
-        'browser does. If this script was already run with that flag and still fails, run ' +
-        'puller/planning-probe.ts for a fresh diagnosis; ' +
-        `(3) form/session requirements — this flow already GETs the search form first, see this file's ` +
-        `header. Cause: ${(cause as Error).message}`,
-    )
+  for (let attempt = 0; ; attempt++) {
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: opts.method ?? 'GET',
+        headers,
+        body: opts.body,
+        redirect: 'follow',
+        ...(dispatcher ? { dispatcher } : {}),
+      } as RequestInit)
+    } catch (cause) {
+      throw new Error(
+        'Southwark planning search request failed. If this address opens fine in a browser, the ' +
+          'likely cause is NOT that the site is unreachable — check: (1) a corporate proxy the browser ' +
+          `uses silently (set HTTPS_PROXY${detectProxyUrl() ? ` — one IS detected: ${detectProxyUrl()}, but the connection still failed` : ' — none is currently set'}); ` +
+          '(2) a corporate TLS-inspection proxy — confirmed before for this exact host: run node WITH the ' +
+          '--use-system-ca flag (Node 22.9+), which trusts the OS certificate store the same way curl/the ' +
+          'browser does. If this script was already run with that flag and still fails, run ' +
+          'puller/planning-probe.ts for a fresh diagnosis; ' +
+          `(3) form/session requirements — this flow already GETs the search form first, see this file's ` +
+          `header. Cause: ${(cause as Error).message}`,
+      )
+    }
+
+    if (res.status === 429) {
+      if (res.body) await res.body.cancel().catch(() => {})
+      if (attempt >= rateLimitConfig.maxRetries) {
+        throw new Error(
+          `Southwark planning ${opts.method ?? 'GET'} ${url} → HTTP 429 (rate limited), still after ` +
+            `${attempt + 1} attempts. Planning is the decisive discriminator, so this is surfaced as a ` +
+            'real failure rather than silently skipped — space calls out further or reduce concurrency.',
+        )
+      }
+      const backoffMs = parseRetryAfterMs(res.headers.get('Retry-After')) ?? Math.min(rateLimitConfig.baseDelayMs * 2 ** attempt, rateLimitConfig.maxDelayMs)
+      await sleep(backoffMs)
+      continue
+    }
+
+    const html = await res.text()
+    if (!res.ok) {
+      throw new Error(
+        `Southwark planning ${opts.method ?? 'GET'} ${url} → HTTP ${res.status}. Idox error pages often ` +
+          `name the exact problem — body: ${snippet(html)}`,
+      )
+    }
+    return { html, cookies: collectCookiePairs(res) }
   }
-  const html = await res.text()
-  if (!res.ok) {
-    throw new Error(
-      `Southwark planning ${opts.method ?? 'GET'} ${url} → HTTP ${res.status}. Idox error pages often ` +
-        `name the exact problem — body: ${snippet(html)}`,
-    )
-  }
-  return { html, cookies: collectCookiePairs(res) }
 }
 
 function withQueryParam(url: string, key: string, value: string): string {

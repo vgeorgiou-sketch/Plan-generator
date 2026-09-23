@@ -40,6 +40,7 @@ import { addressString } from './kineticSignals.ts'
 import { checkConversionSignal, inferSectorFromName, sectorRank, SECTOR_LABEL, type ConversionCheck, type SectorTag } from './sector.ts'
 import { isOwnershipChange, type ChFiling } from './leadTime.ts'
 import { checkPlanningForAddress, planningSignalForBuilding, type MatchedPlanningRow } from './planning.ts'
+import { sleep } from './netEnv.ts'
 import { buildConclusion } from '../graph-model/conclusion.ts'
 import { detectClusters } from '../graph-model/cluster.ts'
 import type { Conclusion, Graph, GraphEdge, GraphNode, SignalStrength } from '../graph-model/types.ts'
@@ -312,6 +313,13 @@ export interface RankedCluster {
 
 const STRENGTH_ORDER: Record<SignalStrength, number> = { green: 0, amber: 1, red: 2 }
 
+/** Same ordering rule used both to pick the best candidate per building
+ *  (dedup) and to sort the final list — one comparator, not two copies that
+ *  could quietly drift apart. */
+function compareRanked(a: RankedCluster, b: RankedCluster): number {
+  return a.rank - b.rank || STRENGTH_ORDER[a.conclusion.strength] - STRENGTH_ORDER[b.conclusion.strength] || (b.conclusion.leadTimeDays ?? 0) - (a.conclusion.leadTimeDays ?? 0)
+}
+
 /**
  * Score, conclude and rank every candidate's cluster — commercial-office
  * and conversion signals lead, per the brief; nothing is discarded. Within
@@ -319,28 +327,48 @@ const STRENGTH_ORDER: Record<SignalStrength, number> = { green: 0, amber: 1, red
  * actual point of feeding convergence more signals — a thin, single-layer
  * cluster (ordinary commerce) must rank below a converging one of the same
  * sector, not sit at the mercy of insertion order.
+ *
+ * Deduped by BUILDING, not by candidate: confirmed live, two different
+ * companies can share one registered office (a formation agent, an
+ * accountant's address) — mergeGraphs/detectClusters already collapse them
+ * into ONE cluster at the graph level (same buildingId → same node ids), but
+ * this function used to still emit one row per ORIGINATING CANDIDATE, so
+ * the identical building printed twice. Kept the best-ranked candidate's
+ * row per building — never the same physical address twice.
  */
 export function rankCandidates(results: CandidateGraphResult[], asOf: string): RankedCluster[] {
   const graph = mergeGraphs(results)
   const clusters = detectClusters(graph)
   const byBuildingId = new Map(clusters.map((c) => [c.buildingId, c]))
 
-  return results
+  const all = results
     .map((result) => {
       const cluster = byBuildingId.get(result.buildingNodeId)
       const conclusion = cluster ? buildConclusion(cluster, { asOf }) : undefined
       return conclusion ? { result, conclusion, rank: sectorRank(result.sector.sector, result.conversion.isConversion) } : null
     })
     .filter((x): x is RankedCluster => x !== null)
-    .sort(
-      (a, b) =>
-        a.rank - b.rank ||
-        STRENGTH_ORDER[a.conclusion.strength] - STRENGTH_ORDER[b.conclusion.strength] ||
-        (b.conclusion.leadTimeDays ?? 0) - (a.conclusion.leadTimeDays ?? 0),
-    )
+
+  const bestByBuilding = new Map<string, RankedCluster>()
+  for (const rc of all) {
+    const existing = bestByBuilding.get(rc.result.buildingNodeId)
+    if (!existing || compareRanked(rc, existing) < 0) bestByBuilding.set(rc.result.buildingNodeId, rc)
+  }
+
+  return [...bestByBuilding.values()].sort(compareRanked)
 }
 
 // ── orchestration (network — not runnable in this sandbox; see README) ────
+
+// Confirmed live: firing planning checks back-to-back for every candidate
+// (each check itself is 2 search variants × GET-form-then-POST — see
+// planning.ts) tripped Southwark's rate limit around the 7th candidate,
+// silently starving the discriminator for the rest of the sweep and
+// undiscriminating the whole ranking. Pace them out — this is the primary
+// fix; fetchPlanningPage's own 429 retry (planning.ts) is the safety net
+// for whatever still slips through.
+const PLANNING_CHECK_MIN_DELAY_MS = 3000
+const PLANNING_CHECK_MAX_DELAY_MS = 5000
 
 async function main() {
   console.log('Part 1 — wider Southwark kinetic pull\n')
@@ -353,7 +381,8 @@ async function main() {
   }
 
   const results: CandidateGraphResult[] = []
-  for (const hit of candidates) {
+  for (let i = 0; i < candidates.length; i++) {
+    const hit = candidates[i]
     console.log(`  enriching ${hit.company_name} (${hit.company_number})…`)
     const enriched = await enrichCandidate(hit)
     const address = addressString(enriched.profile.registered_office_address) || enriched.hit.address_snippet
@@ -365,6 +394,7 @@ async function main() {
     // planning cell genuinely empty, with the reason logged, not silently.
     let matchedPlanning: MatchedPlanningRow[] | null = null
     if (address) {
+      if (i > 0) await sleep(PLANNING_CHECK_MIN_DELAY_MS + Math.random() * (PLANNING_CHECK_MAX_DELAY_MS - PLANNING_CHECK_MIN_DELAY_MS))
       const planning = await checkPlanningForAddress(address).catch((err) => {
         console.log(`    planning check failed (${(err as Error).message}) — leaving it unchecked, not "confirmed empty"`)
         return null

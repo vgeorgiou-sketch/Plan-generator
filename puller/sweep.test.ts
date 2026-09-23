@@ -163,6 +163,27 @@ console.log('\nrankCandidates — conversion/commercial lead, nothing discarded'
   assert('the unhinted wide/mixed-use candidate is ranked last, but STILL present', ranked[2].result.sector.sector === 'mixedUse')
 }
 
+console.log('\nrankCandidates — dedupes by BUILDING, not by candidate (confirmed live: 68 Borough Road printed twice)')
+{
+  // Two DIFFERENT companies sharing the SAME registered office (a formation
+  // agent, an accountant's address — a real, common pattern) slugify to the
+  // SAME buildingNodeId. mergeGraphs/detectClusters already collapse them
+  // into one cluster at the graph level; rankCandidates used to still emit
+  // one row per ORIGINATING CANDIDATE, printing the identical building twice.
+  const sameAddress = '68 Borough Road, London SE1 1JX'
+  const candidateOne = buildCandidateGraph(mkCandidate({ number: '20000001', company_name: 'Borough Road Hospitality One Ltd', address_snippet: sameAddress }))
+  const candidateTwo = buildCandidateGraph(mkCandidate({ number: '20000002', company_name: 'Borough Road Hospitality Two Ltd', address_snippet: sameAddress }))
+  assert('sanity check: both candidates really do share one buildingNodeId', candidateOne.buildingNodeId === candidateTwo.buildingNodeId, [candidateOne.buildingNodeId, candidateTwo.buildingNodeId])
+
+  const elsewhere = buildCandidateGraph(mkCandidate({ number: '20000003', company_name: 'Elsewhere Propco Ltd', address_snippet: '99 Different Street, SE1 9ZZ' }))
+
+  const ranked = rankCandidates([candidateOne, candidateTwo, elsewhere], '2026-06-01')
+  const boroughRoadRows = ranked.filter((r) => r.result.buildingNodeId === candidateOne.buildingNodeId)
+  assert('the shared building appears exactly ONCE in the ranked output, not twice', boroughRoadRows.length === 1, boroughRoadRows.length)
+  assert('the genuinely different building is still present — dedup is per-building, not over-aggressive', ranked.some((r) => r.result.buildingNodeId === elsewhere.buildingNodeId))
+  assert('3 candidates in, 2 ranked rows out (one deduped)', ranked.length === 2, ranked.length)
+}
+
 console.log('\nplanning as the discriminator — the actual fix for the "The Ship" false positive')
 {
   // Same SPV/charge/PSC shape as a real scheme, on purpose — the point is

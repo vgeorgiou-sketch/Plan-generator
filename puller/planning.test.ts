@@ -26,6 +26,7 @@ import {
   matchPlanningRows,
   planningSearchVariants,
   planningSignalForBuilding,
+  rateLimitConfig,
   APPLICATION_TYPE_STRENGTH,
   type MatchedPlanningRow,
 } from './planning.ts'
@@ -276,12 +277,13 @@ console.log('\nparseIdoxForm — reads the real form instead of guessing field n
 /** A minimally-real mock Response — has the `.headers.getSetCookie()` shape
  *  fetchPlanningPage actually calls, so a test double can't silently pass by
  *  omitting a method the real code depends on. */
-function mockResponse(body: string, opts: { ok?: boolean; status?: number; setCookies?: string[] } = {}): Response {
+function mockResponse(body: string, opts: { ok?: boolean; status?: number; setCookies?: string[]; retryAfter?: string } = {}): Response {
   return {
     ok: opts.ok ?? true,
     status: opts.status ?? 200,
     text: async () => body,
-    headers: { getSetCookie: () => opts.setCookies ?? [] },
+    headers: { getSetCookie: () => opts.setCookies ?? [], get: (name: string) => (name === 'Retry-After' ? (opts.retryAfter ?? null) : null) },
+    body: null,
   } as unknown as Response
 }
 
@@ -423,6 +425,73 @@ console.log('\ncheckPlanningForAddress — a non-2xx response body is captured, 
     assert('the response BODY is captured in the error, not just the status code', Boolean(result.error?.includes('Required parameter')), result.error)
   } finally {
     globalThis.fetch = originalFetch
+  }
+}
+
+console.log('\ncheckPlanningForAddress — a 429 (rate limited) retries with backoff instead of being treated as an ordinary failure')
+{
+  // Confirmed live at sweep scale: firing planning checks back-to-back
+  // tripped Southwark's rate limit from roughly the 7th candidate onward.
+  // Keep the retry delays effectively instant for this test — only the
+  // RETRY BEHAVIOUR is under test, not real wall-clock backoff.
+  const saved = { ...rateLimitConfig }
+  rateLimitConfig.baseDelayMs = 1
+  rateLimitConfig.maxDelayMs = 1
+  rateLimitConfig.maxRetries = 2
+
+  try {
+    console.log('  … succeeds after two 429s, on the third attempt')
+    {
+      const originalFetch = globalThis.fetch
+      let simplePostAttempts = 0
+      // @ts-expect-error — test double
+      globalThis.fetch = async (url: string, init?: RequestInit) => {
+        const kind = isFormRequest(url)
+        if (kind === 'simple') return mockResponse(SIMPLE_FORM_HTML, { setCookies: ['JSESSIONID=R1; Path=/'] })
+        if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=R2; Path=/'] })
+        if (url.includes('simpleSearchResults') && init?.method === 'POST') {
+          simplePostAttempts++
+          if (simplePostAttempts <= 2) return mockResponse('', { ok: false, status: 429, retryAfter: '0' })
+          return mockResponse(RESULTS_HTML)
+        }
+        return mockResponse(RESULTS_HTML)
+      }
+
+      try {
+        const result = await checkPlanningForAddress('anywhere')
+        assert('retried exactly twice before succeeding on the 3rd attempt', simplePostAttempts === 3, simplePostAttempts)
+        assert('the variant that got rate-limited still succeeds and contributes matches', result.variantsUsed.includes('simple search (form → POST)'), result.variantsUsed)
+        assert('no error is surfaced for a 429 that eventually succeeded — retried transparently', !result.error, result.error)
+      } finally {
+        globalThis.fetch = originalFetch
+      }
+    }
+
+    console.log('  … a PERSISTENT 429 is still surfaced as a real, explained failure — never silently "confirmed empty"')
+    {
+      const originalFetch = globalThis.fetch
+      let attempts = 0
+      // @ts-expect-error — test double
+      globalThis.fetch = async (url: string) => {
+        const kind = isFormRequest(url)
+        if (kind === 'simple') return mockResponse(SIMPLE_FORM_HTML, { setCookies: ['JSESSIONID=P1; Path=/'] })
+        if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=P2; Path=/'] })
+        attempts++
+        return mockResponse('', { ok: false, status: 429 })
+      }
+
+      try {
+        const result = await checkPlanningForAddress('anywhere')
+        assert('checked is false — persistent rate-limiting is not "confirmed empty"', result.checked === false)
+        assert('retried up to maxRetries+1 times per variant before giving up (2 variants × 3 attempts = 6)', attempts === 6, attempts)
+        assert('the error names the 429/rate-limit cause explicitly, not a vague failure', Boolean(result.error?.includes('429') && result.error?.toLowerCase().includes('rate limited')), result.error)
+        assert('the error explains WHY this matters (planning is the decisive discriminator), not just what happened', Boolean(result.error?.toLowerCase().includes('discriminator')), result.error)
+      } finally {
+        globalThis.fetch = originalFetch
+      }
+    }
+  } finally {
+    Object.assign(rateLimitConfig, saved)
   }
 }
 
