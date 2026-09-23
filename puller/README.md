@@ -24,9 +24,24 @@ node --use-system-ca --env-file=.env --experimental-strip-types puller/task0.ts 
 node --use-system-ca --env-file=.env --experimental-strip-types puller/task1.ts          # EPC pressure signal for the seed building
 node --use-system-ca --env-file=.env --experimental-strip-types puller/planning-probe.ts # RUN THIS FIRST — does Idox address search even work here?
 node --use-system-ca --env-file=.env --experimental-strip-types puller/planningCheck.ts  # planning history verification (the pub vs. the real case)
-node --use-system-ca --env-file=.env --experimental-strip-types puller/sweep.ts          # Part 1 — the wider Southwark sweep, as a graph
+node --env-file=.env         --experimental-strip-types puller/sweepDiscover.ts          # Part 1, stage 1 — discovery (Companies House only)
+node --use-system-ca --env-file=.env --experimental-strip-types puller/sweepEnrich.ts    # Part 1, stage 2 — planning, one candidate at a time
 node --use-system-ca --env-file=.env --experimental-strip-types puller/run.ts            # the whole spike, Tasks 1→5
 ```
+
+**Part 1 is two separate stages, not one script — `sweep.ts` no longer runs
+anything itself.** It one-shot-ran discovery, enrichment AND planning in a
+single loop, and that's what caused two live failures in sequence: firing
+~20 planning checks back-to-back tripped Southwark's rate limit, and once
+that was paced out, a shared/pooled connection let cross-candidate session
+state bleed (both fully diagnosed in `planning.ts`'s file header). Splitting
+into `sweepDiscover.ts` (Companies House only — no rate-limit/session issue
+observed there) and `sweepEnrich.ts` (planning, one candidate at a time,
+resumable) stops the burst at its source instead of patching around it
+again. Run `sweepDiscover.ts` first — it writes every enriched candidate to
+`sweep-candidates.json` — then `sweepEnrich.ts` against that file; if it's
+interrupted, re-run the same command and it picks up exactly where it left
+off (see the Part 1 section below for the full mechanics).
 
 **`--use-system-ca` (Node 22.9+) — required on a corporate network with TLS
 inspection, confirmed live**: `planning.southwark.gov.uk` sits behind a
@@ -68,7 +83,9 @@ and run where egress exists.
 | `run.ts` | 1→5 — the whole spike, converged buildings + evidence | — (orchestration) |
 | `http.ts` / `jsonResponse.ts` | Attributes a 403 to egress vs. real auth rejection; diagnoses an HTML-instead-of-JSON response instead of crashing | `http.test.ts` / `jsonResponse.test.ts` ✓ |
 | `sector.ts` | Part 1 — heuristic sector/conversion tagging from company name + matched prior EPC use | `sweep.test.ts` ✓ |
-| `sweep.ts` | Part 1 — structured Southwark discovery (SIC × location × date), full enrichment (PSC/charges/officers/filings) per hit, built as a `../graph-model` cluster | `sweep.test.ts` ✓ |
+| `sweep.ts` | Part 1's shared, tested logic ONLY — candidate→graph conversion, merge/dedup-by-building, ranking. No longer runnable directly; see `sweepDiscover.ts`/`sweepEnrich.ts` | `sweep.test.ts` ✓ |
+| `sweepDiscover.ts` | Part 1, stage 1 — structured Southwark discovery (SIC × location × date) + full Companies House enrichment (PSC/charges/officers/filings) per hit, writes a JSON file | — (no planning, so no rate-limit/isolation risk to test) |
+| `sweepEnrich.ts` | Part 1, stage 2 — reads that file, runs `checkPlanningForAddress` ONE candidate at a time (paced, resumable), writes results back after every candidate, then prints the ranked report | `sweepEnrich.test.ts` ✓ |
 | `idox.ts` | Shared Idox Public Access result-list parser (`<li class="searchresult">`) and form parser (`parseIdoxForm` — action/method/fields from real HTML) — used by both `southwarkDemolition.ts` and `planning.ts` | `planning.test.ts` ✓ |
 | `planning.ts` | The discriminator: `planningApplication` signal source (Idox, full-history, GET-form-then-POST-search — a cold GET 500s). Application-type classification, address matching, never fabricates a date, unions results across every search variant | `planning.test.ts` ✓ |
 | `planningDataGovUk.ts` | Probe-only client for `planning.data.gov.uk` — unconfirmed whether it covers application-level data | — (probe) |
@@ -83,10 +100,15 @@ node --experimental-strip-types puller/planning.test.ts    # all pass, offline
 node --experimental-strip-types graph-model/validate.ts    # 39 assertions incl. the planning-flips-amber-to-green proof
 ```
 
-Every CLI file (`task0.ts`, `task1.ts`, `run.ts`, `sweep.ts`, `epc-probe.ts`)
-guards its `main()` behind `process.argv[1] === fileURLToPath(import.meta.url)`
-— importing one for its pure, tested functions (as `task1.test.ts` and
-`sweep.test.ts` do) must never also fire a live network call as a side effect.
+Every CLI file (`task0.ts`, `task1.ts`, `run.ts`, `sweepDiscover.ts`,
+`sweepEnrich.ts`, `epc-probe.ts`) guards its `main()` behind
+`process.argv[1] === fileURLToPath(import.meta.url)` — importing one for its
+pure, tested functions (as `task1.test.ts` and `sweep.test.ts` do) must
+never also fire a live network call as a side effect. `sweep.ts` itself
+carries the same guard even though it has no `main()` anymore — running it
+directly just prints where the two real stages live, rather than either
+doing nothing silently or attempting the one-shot burst this whole split
+exists to stop.
 
 ## Needs verification against live responses
 
@@ -299,66 +321,99 @@ when no date can be parsed from the result row — proven in `planning.test.ts`.
 An `observedAt` on a `planningApplication` signal is always a real, parsed
 date or the signal doesn't exist.
 
-**Wired into `sweep.ts`**: each candidate now gets a per-address planning
-check (failure-isolated — one candidate's planning-search failure never
-kills the sweep), attached to the **building** node (planning is filed
-against the site, not the company — the one signal source in this codebase
-that isn't company-scoped). A matched planning application also raises the
-tentative `owns` edge confidence from 0.5 to 0.9, since it corroborates the
+**Wired into Part 1**: each candidate gets a per-address planning check
+(failure-isolated — one candidate's planning-search failure never kills the
+rest), attached to the **building** node (planning is filed against the
+site, not the company — the one signal source in this codebase that isn't
+company-scoped). A matched planning application also raises the tentative
+`owns` edge confidence from 0.5 to 0.9, since it corroborates the
 registered office as a real site — directly addressing the standing rule
 ("match the real site, not a registered office"). Ranking was also fixed
 while wiring this in: candidates now sort by conclusion **strength** within
 their sector tier, not just sector — previously two same-sector candidates
 had no strength-based ordering at all, which undercut the whole point.
 
-**Confirmed live at sweep scale: firing ~20 planning checks back-to-back
-tripped Southwark's rate limit** — HTTP 429 from roughly the 7th candidate
-onward, which the old code treated the same as any other failure
-("inconclusive", move on). That's wrong specifically for this signal:
-planning is the decisive discriminator, so silently under-checking most of
-a sweep undiscriminates the WHOLE ranking, not just one candidate. Two
-fixes, addressing both the cause and the symptom:
-- `sweep.ts` now paces its own planning checks 3–5s apart (jittered),
-  rather than firing them as fast as `enrichCandidate` returns — the
-  primary fix, keeping a sweep from tripping the limit in the first place.
-- `fetchPlanningPage` (`planning.ts`) now retries a 429 with backoff —
-  honouring a `Retry-After` header when the server sends one, otherwise
-  exponential backoff capped at `rateLimitConfig.maxDelayMs` — instead of
-  surfacing it as an ordinary error on the first hit. A *persistent* 429
-  (past `rateLimitConfig.maxRetries`) still eventually surfaces as a real,
-  explained failure naming the 429/rate-limit cause explicitly — never
-  silently reported as "confirmed empty," the same discipline every other
-  planning failure in this file already follows. Proven in
-  `planning.test.ts` with a mocked 429-then-succeeds case and a persistent-
-  429 case, both with the retry delays collapsed to near-zero so the test
-  itself stays fast without weakening what's actually under test.
+**Three live failures in sequence, running planning for ~20 candidates —
+each fix genuinely fixed its own problem and each surfaced the next one
+underneath, until the actual fix turned out to be architectural, not
+another patch:**
 
-**Confirmed live once the pacing fix above landed (zero 429s): every
-candidate's planning check then failed with "page did not look like a real
-results page"** — while the IDENTICAL `checkPlanningForAddress` path kept
-working perfectly for a single address (`planningCheck.ts`). The
-difference was the loop, not the code: `fetchPlanningPage` used Node's
-shared/global connection pool, so a kept-alive TCP socket to
-`planning.southwark.gov.uk` could get reused across candidates. Southwark's
-NetScaler can pin session state to a specific backend via connection
-stickiness, independent of whatever `Cookie` header this codebase sends
-correctly on every request — one candidate's check could land on a
-connection whose backend still thought a DIFFERENT candidate's session was
-live, and hand back a login/session page instead of real results.
-`checkPlanningForAddress` now creates a brand-new, single-use `undici`
-dispatcher (`createSessionDispatcher` — a fresh `Agent({ connections: 1 })`,
-or a fresh `ProxyAgent` when a corporate proxy is configured) for EVERY
-call, used for every request that one address's check makes, then closes
-it when the call finishes. No socket from one candidate's check can ever
-be reused by another's — this is what makes the sweep behave exactly like
-`planningCheck.ts`'s per-address isolation, guaranteed rather than
-incidental. The "not a real results page" error also now captures a body
-snippet (the same discipline as the 500/429 cases above), so a genuine
-login/session page and some other non-results response (a WAF block, a
-malformed-query rejection) are distinguishable from the error text alone
-next time, rather than both looking identical. Proven in `planning.test.ts`
-by capturing the actual dispatcher object passed to `fetch()` across two
-separate calls and asserting they're never the same instance.
+1. **Firing ~20 planning checks back-to-back tripped Southwark's rate
+   limit** — HTTP 429 from roughly the 7th candidate onward, which the
+   code treated the same as any other failure ("inconclusive", move on).
+   Wrong specifically for this signal: planning is the decisive
+   discriminator, so silently under-checking most of a sweep
+   undiscriminates the WHOLE ranking. Two fixes: pacing planning checks
+   3–5s apart (now in `sweepEnrich.ts`, see below) as the primary fix, plus
+   `fetchPlanningPage` (`planning.ts`) retrying a 429 with backoff
+   (honouring `Retry-After` when sent, else exponential backoff capped at
+   `rateLimitConfig.maxDelayMs`) as the safety net for whatever still slips
+   through. A *persistent* 429 (past `rateLimitConfig.maxRetries`) still
+   surfaces as a real, explained failure naming the cause explicitly —
+   never silently "confirmed empty." Proven in `planning.test.ts` with a
+   429-then-succeeds case and a persistent-429 case, retry delays collapsed
+   to near-zero so the tests stay fast.
+2. **Once that pacing landed (zero 429s), every candidate then failed with
+   "page did not look like a real results page"** — while the IDENTICAL
+   `checkPlanningForAddress` path kept working for a single address
+   (`planningCheck.ts`). Root cause: `fetchPlanningPage` used Node's
+   shared/global connection pool, so a kept-alive socket to
+   `planning.southwark.gov.uk` could get reused across candidates.
+   Southwark's NetScaler can pin session state to a specific backend by
+   connection stickiness, independent of the `Cookie` header sent
+   correctly on every request — one candidate's check could land on a
+   connection whose backend still thought a DIFFERENT candidate's session
+   was live. Fix: `checkPlanningForAddress` creates a brand-new, single-use
+   `undici` dispatcher (`createSessionDispatcher`) for EVERY call, used for
+   every request that one address's check makes, then closed when the call
+   finishes — no socket can ever cross between candidates. The "not a real
+   results page" error also now captures a body snippet (the same
+   discipline as the 500/429 cases), so a genuine login/session page and
+   some other non-results response are distinguishable from the error text
+   alone next time.
+3. **That isolation fix immediately broke the TLS fix**: every request
+   started failing "fetch failed" again, despite `--use-system-ca` being
+   set. A fresh, explicitly-constructed `undici` `Agent` doesn't reliably
+   inherit `--use-system-ca`'s effect the way the process's own default
+   dispatcher does — the two fixes were fighting each other. Rather than
+   patch around that interaction again, `createSessionDispatcher` now
+   builds its own trust store explicitly, via `node:tls`'s
+   `getCACertificates('system')` (Node 22.9+, the same release that shipped
+   `--use-system-ca`) combined with the bundled Mozilla list. This reads
+   the OS trust store directly and works whether or not `--use-system-ca`
+   was passed (confirmed: identical cert count either way) — so each
+   per-call dispatcher is self-sufficient for both isolation and TLS trust,
+   and the two concerns can't fight again.
+
+All three proven in `planning.test.ts`: the dispatcher-identity test
+(capturing the actual object passed to `fetch()` across two separate calls
+and asserting they're never the same instance) and a `systemTrustedCaCerts`
+test (returns a non-empty list of real-looking PEM certs).
+
+**Given three live failures from one "run 20 in a loop" design, the actual
+fix was architectural: split Part 1 into two separate stages** rather than
+patch the same loop a fourth time.
+- `sweepDiscover.ts` — Companies House discovery (SIC × Southwark × recent
+  incorporation) and full per-candidate enrichment (PSC/charges/officers/
+  filings). This API has shown neither a rate-limit nor a session-isolation
+  issue, so it still runs as a straightforward burst. Writes every
+  candidate to a JSON file (`sweep-candidates.json` by default).
+- `sweepEnrich.ts` — reads that file and, for each candidate without a
+  `planning` result yet, calls `checkPlanningForAddress` — the exact same
+  proven, isolated path `planningCheck.ts` already uses for one address —
+  paced 3–5s apart, and **rewrites the file after every candidate**. Kill
+  it at any point and re-run the same command: records that already have a
+  `planning` field are never touched again, so it resumes exactly where it
+  left off instead of re-risking a rate limit on work already done. The
+  resumable core (`runEnrichmentPass`) is factored out and proven offline
+  in `sweepEnrich.test.ts` with a fake planning check — no network needed
+  to trust the resume/skip/one-failure-never-stops-the-rest behaviour.
+  Once every candidate has a result, it builds the same ranked report
+  `sweep.ts` used to print inline.
+- `sweep.ts` keeps only the shared, tested logic both stages import
+  (`buildCandidateGraph`, `mergeGraphs`, `rankCandidates`, `enrichCandidate`,
+  `candidateAddress`) — running it directly now just prints where the two
+  real stages live.
 
 **Dedupe: two different companies can share one registered office** (a
 formation agent, an accountant's address — confirmed live: 68 Borough Road
@@ -375,14 +430,16 @@ is per-building, not over-aggressive).
 
 ## Part 1 — the wider sweep, and its own honest gaps
 
-`sweep.ts` extends Task 0 from one hand-fed building to structured discovery:
-SIC codes × Southwark × rolling-12-month incorporation, each hit fully
-enriched and built as a `../graph-model` cluster with a traffic-light
-conclusion. Standing rule, enforced in code, not just documented: it never
-calls `searchCompanies()` (free-text search) — only the structured
-`advancedSearch()` filters. See `sweep.ts`'s own file header for the
-distinction between that and the "HUB Accountants" keyword-guessing failure
-Task 0 already outlawed — this isn't a loophole around the same rule.
+Part 1 (`sweepDiscover.ts` + `sweepEnrich.ts`, sharing logic from `sweep.ts`
+— see above for why it's two stages, not one) extends Task 0 from one
+hand-fed building to structured discovery: SIC codes × Southwark ×
+rolling-12-month incorporation, each hit fully enriched and built as a
+`../graph-model` cluster with a traffic-light conclusion. Standing rule,
+enforced in code, not just documented: it never calls `searchCompanies()`
+(free-text search) — only the structured `advancedSearch()` filters. See
+`sweepDiscover.ts`'s own file header for the distinction between that and
+the "HUB Accountants" keyword-guessing failure Task 0 already outlawed —
+this isn't a loophole around the same rule.
 
 What's a genuine heuristic here, clearly labelled as such (never asserted as
 filed fact): a candidate's **sector** tag comes from its company name (SIC

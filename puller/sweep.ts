@@ -15,10 +15,20 @@
   discovery is a different thing from the "HUB Accountants" failure mode,
   not a loophole around the same rule.
 
-  Run: node --use-system-ca --env-file=.env --experimental-strip-types puller/sweep.ts
-  Needs CH_API_KEY + egress; fails loudly and prints nothing fabricated
-  otherwise (verified in this sandbox — see the honest failure at the bottom
-  of this file's own comments / the session transcript).
+  THIS FILE IS LOGIC ONLY — no network orchestration. It used to also run
+  the whole sweep end to end in one process, but that one-shot design is
+  exactly what caused two separate live failures: firing ~20 planning
+  checks back-to-back tripped Southwark's rate limit, and once THAT was
+  paced out, a shared/pooled connection let cross-candidate session state
+  bleed (see planning.ts's file header for both root causes and fixes).
+  Run the two stages this logic is now shared by, separately:
+    1. sweepDiscover.ts — Companies House only (this API has no such
+       issue), writes every enriched candidate to a JSON file.
+    2. sweepEnrich.ts    — reads that file, checks planning ONE candidate
+       at a time — the exact same isolated, proven path planningCheck.ts
+       already uses for a single address — writing results back after
+       EVERY candidate so an interrupted run resumes exactly where it left
+       off, never re-risking a rate limit on work already done.
 */
 
 import {
@@ -35,12 +45,10 @@ import {
   type OfficerItem,
   type PscItem,
 } from './companiesHouse.ts'
-import { findSouthwarkRealEstateCandidates } from './spvScan.ts'
 import { addressString } from './kineticSignals.ts'
-import { checkConversionSignal, inferSectorFromName, sectorRank, SECTOR_LABEL, type ConversionCheck, type SectorTag } from './sector.ts'
+import { checkConversionSignal, inferSectorFromName, sectorRank, type ConversionCheck, type SectorTag } from './sector.ts'
 import { isOwnershipChange, type ChFiling } from './leadTime.ts'
-import { checkPlanningForAddress, planningSignalForBuilding, type MatchedPlanningRow } from './planning.ts'
-import { sleep } from './netEnv.ts'
+import { planningSignalForBuilding, type MatchedPlanningRow, type PlanningCheckResult } from './planning.ts'
 import { buildConclusion } from '../graph-model/conclusion.ts'
 import { detectClusters } from '../graph-model/cluster.ts'
 import type { Conclusion, Graph, GraphEdge, GraphNode, SignalStrength } from '../graph-model/types.ts'
@@ -104,6 +112,31 @@ export async function enrichCandidate(hit: CompanyHit): Promise<EnrichedCandidat
     filingHistory(hit.company_number),
   ])
   return { hit, profile, psc, charges, officers: officerList, filings }
+}
+
+/** The address to run a planning check against — registered office first,
+ *  falling back to the Companies House search hit's own address snippet.
+ *  Unlike buildCandidateGraph's own registeredAddress (which falls further,
+ *  to a display placeholder for the graph node label), this returns
+ *  undefined when there's genuinely nothing to search — sweepDiscover.ts/
+ *  sweepEnrich.ts use that to skip planning honestly rather than search a
+ *  fabricated placeholder string. */
+export function candidateAddress(c: EnrichedCandidate): string | undefined {
+  return addressString(c.profile.registered_office_address) || c.hit.address_snippet || undefined
+}
+
+/**
+ * One candidate's discovery-stage output, as sweepDiscover.ts writes it and
+ * sweepEnrich.ts reads/updates it. `planning` is the resume marker:
+ * undefined means "not yet checked" — sweepEnrich.ts processes every record
+ * missing it and writes the file back after each one, so an interrupted run
+ * picks up exactly where it left off instead of re-risking a rate limit on
+ * candidates already done.
+ */
+export interface SweepRecord {
+  enriched: EnrichedCandidate
+  address?: string
+  planning?: PlanningCheckResult
 }
 
 export interface CandidateGraphResult {
@@ -358,78 +391,14 @@ export function rankCandidates(results: CandidateGraphResult[], asOf: string): R
   return [...bestByBuilding.values()].sort(compareRanked)
 }
 
-// ── orchestration (network — not runnable in this sandbox; see README) ────
-
-// Confirmed live: firing planning checks back-to-back for every candidate
-// (each check itself is 2 search variants × GET-form-then-POST — see
-// planning.ts) tripped Southwark's rate limit around the 7th candidate,
-// silently starving the discriminator for the rest of the sweep and
-// undiscriminating the whole ranking. Pace them out — this is the primary
-// fix; fetchPlanningPage's own 429 retry (planning.ts) is the safety net
-// for whatever still slips through.
-const PLANNING_CHECK_MIN_DELAY_MS = 3000
-const PLANNING_CHECK_MAX_DELAY_MS = 5000
-
-async function main() {
-  console.log('Part 1 — wider Southwark kinetic pull\n')
-
-  const candidates = await findSouthwarkRealEstateCandidates({ location: 'southwark', monthsBack: 12 })
-  console.log(`  ${candidates.length} candidate entities (SIC × Southwark × 12 months, deduped)\n`)
-  if (candidates.length === 0) {
-    console.log('No candidates found. A valid kill — or the filters need widening.')
-    return
-  }
-
-  const results: CandidateGraphResult[] = []
-  for (let i = 0; i < candidates.length; i++) {
-    const hit = candidates[i]
-    console.log(`  enriching ${hit.company_name} (${hit.company_number})…`)
-    const enriched = await enrichCandidate(hit)
-    const address = addressString(enriched.profile.registered_office_address) || enriched.hit.address_snippet
-
-    // Planning is the discriminator (see planning.ts): a candidate that lights
-    // up SPV+charge+PSC but has no planning application is exactly the shape
-    // ordinary commerce (a pub refinancing) produces. A per-candidate failure
-    // here must never kill the whole sweep — it just leaves that candidate's
-    // planning cell genuinely empty, with the reason logged, not silently.
-    let matchedPlanning: MatchedPlanningRow[] | null = null
-    if (address) {
-      if (i > 0) await sleep(PLANNING_CHECK_MIN_DELAY_MS + Math.random() * (PLANNING_CHECK_MAX_DELAY_MS - PLANNING_CHECK_MIN_DELAY_MS))
-      const planning = await checkPlanningForAddress(address).catch((err) => {
-        console.log(`    planning check failed (${(err as Error).message}) — leaving it unchecked, not "confirmed empty"`)
-        return null
-      })
-      if (planning) {
-        if (!planning.checked) console.log(`    planning check inconclusive: ${planning.error}`)
-        matchedPlanning = planning.matches
-      }
-    }
-
-    // no EPC universe wired in here — run Task 1 separately and pass matches in to unlock conversion detection
-    results.push(buildCandidateGraph(enriched, { matchedPlanning }))
-  }
-
-  const asOf = new Date().toISOString().slice(0, 10)
-  const ranked = rankCandidates(results, asOf)
-
-  console.log(`\n${'═'.repeat(70)}\n${ranked.length} clusters, ranked (commercial/conversion first, nothing discarded):\n`)
-  for (const { result, conclusion, rank } of ranked) {
-    const tag = result.conversion.isConversion ? 'CONVERSION SIGNAL' : SECTOR_LABEL[result.sector.sector]
-    console.log(`▸ [${conclusion.strength.toUpperCase()}] rank ${rank} · ${tag} · ${conclusion.headline}`)
-    console.log(`    ${conclusion.reasoning}`)
-    console.log(`    sector basis: ${result.sector.basis} (${result.sector.confidence})`)
-    console.log(`    conversion: ${result.conversion.reason}`)
-    console.log(`    planning: ${result.planningChecked ? 'checked (see evidence above for any match)' : 'not checked'}`)
-    console.log('')
-  }
-}
-
-// Only run the live CLI when this file is executed directly — importing
-// it for its pure functions (as tests do) must never also fire network calls.
+// This file no longer runs the sweep itself — see this file's header for
+// why. Running it directly prints where the two stages actually live,
+// rather than either doing nothing silently or (worse) still trying the
+// one-shot burst this whole split exists to stop.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((err) => {
-    console.error('\nSweep could not complete:\n  ' + (err as Error).message)
-    console.error('\nNo clusters printed because none were pulled. (Not fabricated.)')
-    process.exit(1)
-  })
+  console.log('sweep.ts holds shared, tested logic only — it no longer runs the sweep directly.')
+  console.log('Run the two stages instead:')
+  console.log('  1. node --env-file=.env --experimental-strip-types puller/sweepDiscover.ts')
+  console.log('  2. node --use-system-ca --env-file=.env --experimental-strip-types puller/sweepEnrich.ts')
+  console.log('\nSee puller/README.md for why this is split, and what each stage does.')
 }

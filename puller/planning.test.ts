@@ -27,6 +27,7 @@ import {
   planningSearchVariants,
   planningSignalForBuilding,
   rateLimitConfig,
+  systemTrustedCaCerts,
   APPLICATION_TYPE_STRENGTH,
   type MatchedPlanningRow,
 } from './planning.ts'
@@ -445,6 +446,18 @@ console.log('\ncheckPlanningForAddress — each call gets its own isolated dispa
   } finally {
     globalThis.fetch = originalFetch
   }
+}
+
+console.log('\nsystemTrustedCaCerts — explicit OS + bundled trust, not dependent on --use-system-ca reaching a fresh Agent')
+{
+  // Confirmed live: isolating each candidate's connection (a fresh undici
+  // Agent) broke --use-system-ca, since a fresh Agent didn't reliably pick
+  // up the flag's effect the way the process's own default dispatcher
+  // does. Fetching the CA list explicitly, rather than depending on
+  // ambient process state, is what makes isolation and TLS trust coexist.
+  const certs = systemTrustedCaCerts()
+  assert('returns a non-empty list of certs', certs.length > 0, certs.length)
+  assert('every entry looks like a real PEM certificate, not a placeholder', certs.every((c) => String(c).includes('BEGIN CERTIFICATE')), certs.length)
 }
 
 console.log('\ncheckPlanningForAddress — a non-2xx response body is captured, not swallowed (Idox error pages name the problem)')

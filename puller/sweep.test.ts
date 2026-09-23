@@ -5,7 +5,7 @@
   fixtures. No network; nothing here asserts a real company exists.
 */
 
-import { buildCandidateGraph, mergeGraphs, rankCandidates, slugify, type EnrichedCandidate } from './sweep.ts'
+import { buildCandidateGraph, candidateAddress, mergeGraphs, rankCandidates, slugify, type EnrichedCandidate } from './sweep.ts'
 import { checkConversionSignal, inferSectorFromName, sectorRank } from './sector.ts'
 
 let failures = 0
@@ -68,6 +68,21 @@ function mkCandidate(overrides: Partial<EnrichedCandidate['hit']> & { number: st
     officers: [],
     filings: [],
   }
+}
+
+console.log('\ncandidateAddress — the address sweepDiscover.ts/sweepEnrich.ts search planning against')
+{
+  const withRegisteredOffice = {
+    ...mkCandidate({ number: '21000001', address_snippet: '99 Snippet Ave, SE1 1AA' }),
+    profile: { company_number: '21000001', registered_office_address: { premises: '5', address_line_1: 'Registered St', postal_code: 'SE1 2BB' } },
+  }
+  assert('prefers the registered office address over the search-hit snippet', candidateAddress(withRegisteredOffice)?.includes('Registered St'))
+
+  const snippetOnly = mkCandidate({ number: '21000002', address_snippet: '10 Snippet Only Road, SE1 3CC' })
+  assert('falls back to the address_snippet when no registered office is on file', candidateAddress(snippetOnly) === '10 Snippet Only Road, SE1 3CC')
+
+  const neither = { ...mkCandidate({ number: '21000003' }), hit: { ...mkCandidate({ number: '21000003' }).hit, address_snippet: undefined } }
+  assert('genuinely no address anywhere → undefined, never a fabricated placeholder', candidateAddress(neither) === undefined)
 }
 
 console.log('\nbuildCandidateGraph — conversion case (office EPC + co-living SPV)')

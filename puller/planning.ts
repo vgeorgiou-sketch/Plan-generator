@@ -89,6 +89,21 @@
   socket from one address's check can ever be reused by another's,
   matching planningCheck.ts's per-address isolation exactly rather than
   incidentally.
+
+  CONFIRMED live immediately after THAT fix landed: the isolation fix broke
+  the TLS fix. A fresh, explicitly-constructed undici Agent does NOT
+  reliably inherit --use-system-ca's effect the way the process's own
+  default dispatcher does — every request failed "fetch failed" again,
+  despite the flag being set, because createSessionDispatcher's new Agent
+  was (re)creating its own TLS trust context that never consulted the OS
+  store the boot flag was supposed to add. Rather than depend on a
+  boot-time flag two independent fixes could keep fighting over,
+  createSessionDispatcher now builds the CA list itself, explicitly, via
+  node:tls's getCACertificates('system') (Node 22.9+, the same release
+  that shipped --use-system-ca) combined with the bundled Mozilla list —
+  this reads the OS trust store directly and works whether or not
+  --use-system-ca was passed, so isolation and TLS trust can no longer
+  fight: each per-call dispatcher is self-sufficient for both.
 */
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, parseIdoxForm, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
@@ -96,6 +111,7 @@ import { matchAddress, parseAddress, type ParsedAddress } from './addressMatch.t
 import { collectCookiePairs, detectProxyUrl, proxyDispatcher, sleep, BOT_USER_AGENT } from './netEnv.ts'
 import { snippet } from './jsonResponse.ts'
 import { Agent, ProxyAgent, type Dispatcher } from 'undici'
+import { getCACertificates, rootCertificates } from 'node:tls'
 import type { Signal } from '../signal-model/types.ts'
 
 export interface PlanningSearchVariant {
@@ -411,6 +427,28 @@ export interface PlanningCheckResult {
 }
 
 /**
+ * The OS trust store PLUS Node's own bundled (Mozilla) roots, fetched
+ * explicitly. Confirmed live: a fresh, per-call undici Agent does not
+ * reliably pick up --use-system-ca's effect the way the process's default
+ * dispatcher does, so isolation (createSessionDispatcher) and TLS trust
+ * (--use-system-ca) ended up fighting each other. tls.getCACertificates
+ * ('system') reads the OS store directly and works whether or not
+ * --use-system-ca was passed (confirmed: returns the same certs either
+ * way) — passing it explicitly makes each dispatcher self-sufficient
+ * instead of depending on ambient process state a fresh Agent might not
+ * inherit. Falls back to the bundled list alone on a Node too old to have
+ * getCACertificates (added alongside --use-system-ca, so this should be
+ * rare in practice).
+ */
+export function systemTrustedCaCerts(): (string | Buffer)[] {
+  try {
+    return [...getCACertificates('system'), ...getCACertificates('bundled')]
+  } catch {
+    return [...rootCertificates]
+  }
+}
+
+/**
  * A brand-new, single-use dispatcher for one checkPlanningForAddress call —
  * never Node's shared/global connection pool. See this file's header for
  * why: a pooled keep-alive socket to planning.southwark.gov.uk let a
@@ -418,13 +456,17 @@ export interface PlanningCheckResult {
  * stickiness, independent of the Cookie header this codebase sends
  * correctly on every request. `connections: 1` guarantees this instance
  * can never even internally reuse a stale socket across the couple of
- * requests one address check makes. When a corporate proxy is configured,
- * a fresh ProxyAgent is used instead of netEnv.ts's shared/cached one, for
- * the same reason — isolation, not just connectivity.
+ * requests one address check makes. Explicitly trusts the OS store (see
+ * systemTrustedCaCerts) so this isolation doesn't reintroduce the
+ * corporate-TLS-inspection failure --use-system-ca fixed. When a corporate
+ * proxy is configured, a fresh ProxyAgent is used instead of netEnv.ts's
+ * shared/cached one, for the same isolation reason, with the same explicit
+ * trust store applied to the tunnelled connection (`requestTls`).
  */
 function createSessionDispatcher(): Dispatcher {
   const proxyUrl = detectProxyUrl()
-  return proxyUrl ? new ProxyAgent(proxyUrl) : new Agent({ connections: 1, pipelining: 0 })
+  const ca = systemTrustedCaCerts()
+  return proxyUrl ? new ProxyAgent({ uri: proxyUrl, requestTls: { ca } }) : new Agent({ connections: 1, pipelining: 0, connect: { ca } })
 }
 
 /**
