@@ -9,6 +9,14 @@
   checkPlanningForAddress unions results across every search variant rather
   than stopping at the first, which is the actual fix for the brief's
   "nearly missed it with a 90-day default" warning.
+
+  Reference note: the real Southwark Bridge Road scheme's confirmed
+  Southwark-NATIVE reference is 26/AP/1201 (used throughout below) — an
+  earlier round used 26/00849/OBS, which turned out to be a third-party
+  mirror's own cross-boundary "Observations" label for the SAME scheme, not
+  Southwark's own register's reference. See planningCheck.ts's header for
+  why verification is by outcome (the classification reached), not by
+  matching one exact reference string.
 */
 
 import { parseIdoxResultList, parseIdoxForm, ukDateToIso, looksLikeIdoxResultsPage, IDOX_BASE } from './idox.ts'
@@ -32,14 +40,15 @@ function assert(name: string, cond: boolean, detail?: unknown) {
 }
 
 // The REAL, manually-verified records for both known cases (not fictional).
-// Southwark Bridge Road: ref 26/00849/OBS, 10 June 2026, change of use to
-// co-living. The Ship: ref 23/AP/3411, 8 Dec 2023, tree works — its ONLY
-// planning record ever. Markup shape must be re-checked against Southwark's
+// Southwark Bridge Road: ref 26/AP/1201 (Southwark's own native reference),
+// 10 June 2026, change of use to co-living, 395 co-living units. The Ship:
+// ref 23/AP/3411, 8 Dec 2023, tree works — one of NINE real records for that
+// address, all routine. Markup shape must be re-checked against Southwark's
 // live HTML before being trusted (see planning-probe.ts).
 const RESULTS_HTML = `
 <ul id="searchresults">
   <li class="searchresult">
-    <a href="/online-applications/applicationDetails.do?keyVal=SBR2026">26/00849/OBS | Partial demolition, extension and change of use of existing building for co-living use</a>
+    <a href="/online-applications/applicationDetails.do?keyVal=SBR2026">26/AP/1201 | Change of use of existing building for co-living use, 395 co-living units</a>
     <p class="address">38-48 Southwark Bridge Road, London, SE1 9BB</p>
     <p class="metaInfo">Registered Date: 10/06/2026 | Status: Pending</p>
   </li>
@@ -54,7 +63,7 @@ const RESULTS_HTML = `
   </li>
 </ul>`
 
-console.log('Idox date extraction + BOTH confirmed reference formats')
+console.log('Idox date extraction + the confirmed Southwark-native reference format')
 {
   assert('UK date "10/06/2026" → ISO "2026-06-10"', ukDateToIso('10/06/2026') === '2026-06-10')
   assert('garbage does not parse to a fake date', ukDateToIso('not a date') === undefined)
@@ -64,10 +73,30 @@ console.log('Idox date extraction + BOTH confirmed reference formats')
 
   const rows = parseIdoxResultList(RESULTS_HTML)
   assert('parses all 3 rows', rows.length === 3, rows.length)
-  assert('extracts the real reference 26/00849/OBS (YY/NNNNN/XXX shape)', rows[0].reference === '26/00849/OBS', rows[0].reference)
-  assert('extracts the real reference 23/AP/3411 (YY/AP/NNNN shape)', rows[1].reference === '23/AP/3411', rows[1].reference)
+  assert('extracts the real reference 26/AP/1201 (Southwark\'s own native reference)', rows[0].reference === '26/AP/1201', rows[0].reference)
+  assert('extracts the real reference 23/AP/3411 (same YY/AP/NNNN shape)', rows[1].reference === '23/AP/3411', rows[1].reference)
   assert('extracts the metaInfo date for the real SBR row', rows[0].dateText === '10/06/2026', rows[0].dateText)
   assert('row with no metaInfo has no dateText, not a guessed one', rows[2].dateText === undefined)
+}
+
+console.log('\nreference shape — the SECOND (NNNNN/XXX) alternative, kept defensively though not tied to a known real case')
+{
+  // Not a "real, manually-verified" case: 26/00849/OBS (which originally
+  // motivated this shape) turned out to be a third-party mirror's own
+  // cross-boundary "Observations" label, not Southwark's native reference —
+  // see this file's header. The shape is still worth matching defensively
+  // (Southwark's own register may use it for other application categories),
+  // so a synthetic example keeps it covered without conflating it with a
+  // confirmed real answer.
+  const [row] = parseIdoxResultList(`
+<ul id="searchresults">
+  <li class="searchresult">
+    <a href="/online-applications/applicationDetails.do?keyVal=SYN1">24/01234/FUL | Erection of a two-storey rear extension</a>
+    <p class="address">2 Example Street, London SE1 3CD</p>
+    <p class="metaInfo">Registered Date: 01/02/2024</p>
+  </li>
+</ul>`)
+  assert('the NNNNN/XXX shape still parses (defensive coverage, not a real-case fixture)', row.reference === '24/01234/FUL', row.reference)
 }
 
 console.log('\nreference/date extraction — widened to the whole row (confirmed live: real rows showed description but "(no ref)"/"(no date)")')
@@ -133,7 +162,7 @@ console.log('\naddress matching — the discriminator, reproducing the manually-
   const rows = parseIdoxResultList(RESULTS_HTML)
 
   const sbrMatches = matchPlanningRows(rows, '38-48 Southwark Bridge Road SE1')
-  assert('SBR address matches ONLY its own record (26/00849/OBS), not the pub\'s', sbrMatches.length === 1 && sbrMatches[0].reference === '26/00849/OBS', sbrMatches)
+  assert('SBR address matches ONLY its own record (26/AP/1201), not the pub\'s', sbrMatches.length === 1 && sbrMatches[0].reference === '26/AP/1201', sbrMatches)
   assert('matched row is classified changeOfUse — must light the planning cell', sbrMatches[0].applicationType === 'changeOfUse')
 
   const shipMatches = matchPlanningRows(rows, '68 Borough Road SE1')
@@ -159,9 +188,11 @@ console.log('\nmatchPlanningRows — loosened matching for two confirmed live ga
   const pubMatches = matchPlanningRows(businessNamePrefixed, '68 Borough Road')
   assert('a business-name-prefixed real address still matches a bare street+number query', pubMatches.length === 1 && pubMatches[0].reference === '23/AP/3411', pubMatches)
 
-  // Gap 2: a cross-boundary "Observations to Other Authorities" entry can be
-  // indexed under an address field that doesn't structurally read as a site
-  // address at all, while the real street+number are plainly named in the
+  // Gap 2, synthetic illustration (not the confirmed real answer — see this
+  // file's header): a cross-boundary "Observations to Other Authorities"
+  // entry, of the kind a third-party mirror labels this way, can be indexed
+  // under an address field that doesn't structurally read as a site address
+  // at all, while the real street+number are plainly named in the
   // description — matchAddress's structured comparison has nothing to work
   // with there, so mentionsTargetStreet is the deliberate loose fallback.
   const variantAddressField = [
@@ -196,7 +227,7 @@ console.log('\nsignal building — never fabricates a date')
   const sig = planningSignalForBuilding(withDate, 'test-building')
   assert('produces a filed planningApplication signal when a real date is present', sig?.layer === 'planningApplication' && sig.factType === 'filed', sig)
   assert('observedAt is the REAL parsed ISO date (2026-06-10), not today\'s date or a placeholder', sig?.observedAt === '2026-06-10', sig?.observedAt)
-  assert('sourceRef carries the real reference', sig?.sourceRef === '26/00849/OBS')
+  assert('sourceRef carries the real reference', sig?.sourceRef === '26/AP/1201')
   assert('note records the classified type transparently', Boolean(sig?.note?.includes('changeOfUse')))
 
   const noDateRow: MatchedPlanningRow = { reference: '99/XX/9999', address: '1 Nowhere Street SE1', description: 'no date row', detailUrl: 'u', matchScore: 1, applicationType: 'other' }

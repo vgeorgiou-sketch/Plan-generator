@@ -67,10 +67,16 @@ export function ukDateToIso(s: string): string | undefined {
   return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
 }
 
-// Southwark reference formats CONFIRMED real (not guessed): "23/AP/3411"
-// (YY/AP/NNNN — the common full-application shape) and "26/00849/OBS"
-// (YY/NNNNN/XXX — seen on the real Southwark Bridge Road record). Two
-// distinct shapes on the same council's records, so both are matched.
+// Southwark's OWN native reference shape, confirmed real from its own
+// register (not guessed): "23/AP/3411" and "26/AP/1201" (YY/AP/NNNN) — both
+// the pub's tree-works consent and the real Southwark Bridge Road co-living
+// scheme use it. "26/00849/OBS" (YY/NNNNN/XXX) turned out to be a
+// third-party mirror's own cross-boundary "Observations" label for that
+// SAME scheme, not Southwark's native format — but the shape is kept as a
+// second alternative anyway: worth matching in case Southwark's own
+// register also uses it for other application categories, and matching it
+// costs nothing (never a false positive on its own — matchPlanningRows'
+// address check is what actually filters rows).
 const REFERENCE = /\b\d{2}\/(?:[A-Z]{2}\/\d{3,5}|\d{4,6}\/[A-Z]{2,4})\b/
 
 /** Parse a list-style Idox results page into rows. */

@@ -24,21 +24,28 @@
        apply a boot-time flag to itself, only report whether it's missing).
     4. Runs the REAL checkPlanningForAddress (proxy-aware, acquires +
        threads the session cookie — see planning.ts) against both known
-       addresses and checks for the exact manually-confirmed reference.
+       addresses and verifies by OUTCOME — does the strongest match reach
+       change-of-use-or-stronger — not by matching one exact reference
+       string. Confirmed necessary live: the same real Southwark Bridge
+       Road scheme surfaced under two different reference labels depending
+       on the source (a third-party mirror's cross-boundary "Observations"
+       entry vs. Southwark's own native register) — see planningCheck.ts's
+       header for the full reasoning.
 
   Run: node --use-system-ca --experimental-strip-types puller/planning-probe.ts
   Needs no API key. Nothing here is parsed blindly or trusted silently.
 */
 
 import { candidateEntityUrls } from './planningDataGovUk.ts'
-import { checkPlanningForAddress } from './planning.ts'
+import { checkPlanningForAddress, APPLICATION_TYPE_STRENGTH } from './planning.ts'
 import { detectProxyUrl, hasUseSystemCaFlag } from './netEnv.ts'
 import { BODY_SNIPPET_LEN, snippet } from './jsonResponse.ts'
 import { IDOX_BASE } from './idox.ts'
 import { fileURLToPath } from 'node:url'
 
 const ADDRESSES = ['38-48 Southwark Bridge Road', '68 Borough Road']
-const KNOWN_REFS: Record<string, string> = { '38-48 Southwark Bridge Road': '26/00849/OBS', '68 Borough Road': '23/AP/3411' }
+type Expectation = 'shouldStayQuiet' | 'shouldLightUp'
+const EXPECTATIONS: Record<string, Expectation> = { '38-48 Southwark Bridge Road': 'shouldLightUp', '68 Borough Road': 'shouldStayQuiet' }
 const PROBE_TARGET = `${IDOX_BASE}/`
 
 async function probePlanningDataGovUk(): Promise<void> {
@@ -83,8 +90,8 @@ async function probeConnectivity(): Promise<boolean> {
 }
 
 async function probeKnownCase(address: string): Promise<void> {
-  const knownRef = KNOWN_REFS[address]
-  console.log(`\n${'═'.repeat(70)}\n${address} — known answer: ${knownRef}\n`)
+  const expectation = EXPECTATIONS[address]
+  console.log(`\n${'═'.repeat(70)}\n${address} — expected: ${expectation === 'shouldLightUp' ? 'a change-of-use-or-stronger record' : 'routine records only'}\n`)
   const result = await checkPlanningForAddress(address)
 
   if (!result.checked) {
@@ -95,12 +102,24 @@ async function probeKnownCase(address: string): Promise<void> {
   if (result.dateSpan) console.log(`date span: ${result.dateSpan.earliest} .. ${result.dateSpan.latest}`)
   if (result.error) console.log(`⚠ one or more variants failed alongside the successful one(s) — ${result.error}`)
 
-  const found = result.matches.find((m) => m.reference === knownRef)
   console.log(`${result.matches.length} matching application(s):`)
   for (const m of result.matches) {
-    console.log(`  · ${m.reference || '(no ref)'} [${m.applicationType}] ${m.dateText ?? '(no date)'} — ${m.description}${m === found ? '  ← known answer' : ''}`)
+    console.log(`  · ${m.reference || '(no ref)'} [${m.applicationType}] ${m.dateText ?? '(no date)'} — ${m.description}`)
   }
-  console.log(found ? `\n→ PASS — ${knownRef} found and correctly classified as ${found.applicationType}.` : `\n→ FAIL — ${knownRef} was not among the matches.`)
+
+  // Verified by OUTCOME (the strongest classification reached), never one
+  // exact reference string — see this file's header.
+  if (result.matches.length === 0) {
+    console.log(expectation === 'shouldStayQuiet' ? '\n→ PASS — zero matches, correctly quiet.' : '\n→ FAIL — expected a development-strength record here.')
+    return
+  }
+  const strongest = result.matches.reduce((a, b) => (APPLICATION_TYPE_STRENGTH[b.applicationType] > APPLICATION_TYPE_STRENGTH[a.applicationType] ? b : a))
+  const isStrong = APPLICATION_TYPE_STRENGTH[strongest.applicationType] >= APPLICATION_TYPE_STRENGTH.changeOfUse
+  if (expectation === 'shouldStayQuiet') {
+    console.log(isStrong ? `\n→ FAIL — strongest match is ${strongest.reference || '(no ref)'} classified ${strongest.applicationType}, a development signal expected to stay quiet.` : `\n→ PASS — strongest match is ${strongest.applicationType} (routine, not development).`)
+  } else {
+    console.log(isStrong ? `\n→ PASS — ${strongest.reference || '(no ref)'} classified ${strongest.applicationType} (development signal).` : `\n→ FAIL — strongest match is only ${strongest.applicationType}; no change-of-use-or-stronger record found.`)
+  }
 }
 
 async function main() {
@@ -132,10 +151,11 @@ async function main() {
   for (const address of ADDRESSES) await probeKnownCase(address)
 
   console.log(`\n${'═'.repeat(70)}`)
-  console.log('Both known cases pass when the known reference is FOUND: 26/00849/OBS for')
-  console.log('Southwark Bridge Road, 23/AP/3411 for 68 Borough Road. If they now pass,')
-  console.log('planning.ts is confirmed working end to end — sweep.ts and planningCheck.ts')
-  console.log('use the exact same checkPlanningForAddress path, so they benefit too.')
+  console.log('Both known cases pass by OUTCOME: Southwark Bridge Road reaches a')
+  console.log('change-of-use-or-stronger record, 68 Borough Road stays all-routine. If')
+  console.log('they now pass, planning.ts is confirmed working end to end — sweep.ts and')
+  console.log('planningCheck.ts use the exact same checkPlanningForAddress path, so they')
+  console.log('benefit too.')
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

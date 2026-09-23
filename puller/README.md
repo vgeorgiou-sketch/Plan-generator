@@ -241,7 +241,7 @@ mocked reproduction of the actual gap:
   known label matches — a real date that was on the page, not a fabricated
   one, still never a placeholder or today's date.
 - **Southwark Bridge Road returned signage/façade applications but not the
-  known `26/00849/OBS`; the pub returned zero.** Root cause in
+  co-living scheme; the pub returned zero.** Root cause in
   `addressMatch.ts`'s `tokenOverlap`: it divided shared tokens by
   `max(query, candidate)` instead of the query's own token count, which
   penalised a real row for carrying MORE text than a minimal query address
@@ -254,27 +254,43 @@ mocked reproduction of the actual gap:
   a match if its address OR description plainly contains the target's
   street token(s) and building number as substrings, even when
   `matchAddress`'s structured score doesn't clear threshold — covering a
-  cross-boundary "Observations to Other Authorities" entry (per the brief,
-  `26/00849/OBS`'s likely category) that may be indexed under an address
-  field that doesn't read as a site address at all, while the real street
-  is plainly named in the description. Both fixes proven in
-  `planning.test.ts`/`crossReference.test.ts` — including a case proving
-  loosening still correctly excludes a genuinely unrelated street, not
-  "matches everything."
+  cross-boundary "Observations to Other Authorities" entry that may be
+  indexed under an address field that doesn't read as a site address at
+  all, while the real street is plainly named in the description. Both
+  fixes proven in `planning.test.ts`/`crossReference.test.ts` — including a
+  case proving loosening still correctly excludes a genuinely unrelated
+  street, not "matches everything." With these fixed, the discriminator
+  confirmed live: Southwark's own register returns the real co-living
+  scheme under ref **26/AP/1201** — "change of use ... for co-living use,
+  395 co-living units" — classified `changeOfUse`; the pub returns 9
+  records, all routine (advertising panels, a beer-garden fence, signage),
+  zero reaching `changeOfUse` or stronger.
 
-**Verification, per the brief — reproducing exact manually-confirmed
-answers, not just "found something plausible"**: `planningCheck.ts` runs
-both known cases and checks for the EXACT reference:
-- 68 Borough Road (The Ship): ref **23/AP/3411**, 8 Dec 2023, "Works to a
-  Tree in a Conservation Area" — its only planning record ever. Must
-  classify as `treeWorks`, ranked with advertisement consent, NOT development.
-- 38–48 Southwark Bridge Road: ref **26/00849/OBS**, 10 June 2026, "Partial
-  demolition, extension and change of use of existing building for
-  co-living use". Must classify as `changeOfUse` and light the planning cell.
+**Verification is by OUTCOME, not by matching one exact reference
+string — a real finding, not a design choice made in advance.** An earlier
+round's manually-confirmed answer for Southwark Bridge Road was
+`26/00849/OBS`, sourced from a third-party mirror (Plota) — which turned
+out to be that mirror's own label for a cross-boundary "Observations"
+entry, not Southwark's native reference. The SAME real scheme surfaces
+under Southwark's own register as `26/AP/1201`. Requiring an exact string
+match would have reported a correctly-working discriminator as a FAIL,
+just because two different sources label the identical development
+differently. `planningCheck.ts`/`planning-probe.ts` now verify by the
+classification the strongest match reaches, showing a known reference
+example for transparency (and a bonus confirmation line when it does line
+up) rather than requiring it:
+- 68 Borough Road (The Ship): 9 real records, ALL routine — advertising
+  panels, a beer-garden fence, signage, tree works (ref **23/AP/3411**
+  among them) — zero reaching `changeOfUse` or stronger. Must NOT register
+  as a development signal.
+- 38–48 Southwark Bridge Road: Southwark's own native reference
+  **26/AP/1201**, 10 June 2026, "Change of use ... for co-living use, 395
+  co-living units". Must classify as `changeOfUse` and light the planning
+  cell.
 
-Both references are real, given, and reproduced exactly in `planning.test.ts`
-— the same proof pattern as the 489-day cross-check: a known answer the code
-must independently arrive at, not a synthetic example. (The related
+Both outcomes are real, given, and reproduced in `planning.test.ts` — the
+same proof pattern as the 489-day cross-check: a known answer the code must
+independently arrive at, not a synthetic example. (The related
 cross-boundary consultation to Tower Hamlets, `PA/26/00989/NC`, is noted but
 out of scope for this increment — a future neighbouring-authority signal path.)
 
