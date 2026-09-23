@@ -212,11 +212,55 @@ Road application is 17 months after the SPV that formed it. `planning.ts`'s
 search variants carry NO date-bound parameter anywhere in the flow
 (omission requests full history; guessing a specific override param name
 that the server silently ignores would be false confidence, not a fix).
-`checkPlanningForAddress` goes further: it unions results across **every**
-search variant instead of stopping at the first that returns a page, and
-reports the returned date **span** — proven in `planning.test.ts` with a
-mocked fetch where one variant returns nothing and the other has the real,
-3-year-old record; the union still finds it.
+Confirmed live at this stage: preserving the search form's own fields
+verbatim (needed to carry a hidden session/CSRF token through the POST)
+could ALSO silently replay a default recency window if Idox pre-fills one
+as a hidden/defaulted field — the brief's original 90-day trap again,
+through a different door. `runSearchVariant` now strips any field whose
+name looks date-range-shaped before submitting, rather than trusting it's
+already blank — proven in `planning.test.ts` with a form fixture carrying
+a pre-filled `searchCriteria.dateReceivedFrom`. `checkPlanningForAddress`
+goes further still: it unions results across **every** search variant
+instead of stopping at the first that returns a page, and reports the
+returned date **span** — proven with a mocked fetch where one variant
+returns nothing and the other has the real, 3-year-old record; the union
+still finds it.
+
+**Two more live findings, once real applications started coming back**
+(2 for Southwark Bridge Road, with real proposal text — the flow above is
+confirmed working end to end) — neither guessed, both fixed against a
+mocked reproduction of the actual gap:
+- **Every result showed `(no ref)`/`(no date)`.** `idox.ts`'s row parser
+  only ever searched the anchor text and the address line for a reference,
+  and only three date-label wordings — too narrow for the real markup,
+  where a reference can sit in a separate metaInfo line or only in the
+  anchor's `title` tooltip. `parseIdoxResultList` now searches the WHOLE
+  row's text (plus the title attribute) for a reference, `DATE_LABELS` was
+  broadened (word-order variants like "Received Date:"), and a last-resort
+  fallback takes the one obvious UK-date-shaped token on the row when no
+  known label matches — a real date that was on the page, not a fabricated
+  one, still never a placeholder or today's date.
+- **Southwark Bridge Road returned signage/façade applications but not the
+  known `26/00849/OBS`; the pub returned zero.** Root cause in
+  `addressMatch.ts`'s `tokenOverlap`: it divided shared tokens by
+  `max(query, candidate)` instead of the query's own token count, which
+  penalised a real row for carrying MORE text than a minimal query address
+  (a site/business-name prefix like "The Ship, 68 Borough Road" against a
+  bare "68 Borough Road" query — exactly what this codebase's own callers
+  pass, no postcode included). Fixed to divide by the query's length: does
+  the query's address show up in the candidate, not "how symmetric are
+  these two strings." `planning.ts`'s `matchPlanningRows` also gained a
+  second, deliberately loose pass (`mentionsTargetStreet`): a row counts as
+  a match if its address OR description plainly contains the target's
+  street token(s) and building number as substrings, even when
+  `matchAddress`'s structured score doesn't clear threshold — covering a
+  cross-boundary "Observations to Other Authorities" entry (per the brief,
+  `26/00849/OBS`'s likely category) that may be indexed under an address
+  field that doesn't read as a site address at all, while the real street
+  is plainly named in the description. Both fixes proven in
+  `planning.test.ts`/`crossReference.test.ts` — including a case proving
+  loosening still correctly excludes a genuinely unrelated street, not
+  "matches everything."
 
 **Verification, per the brief — reproducing exact manually-confirmed
 answers, not just "found something plausible"**: `planningCheck.ts` runs

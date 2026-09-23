@@ -70,6 +70,43 @@ console.log('Idox date extraction + BOTH confirmed reference formats')
   assert('row with no metaInfo has no dateText, not a guessed one', rows[2].dateText === undefined)
 }
 
+console.log('\nreference/date extraction — widened to the whole row (confirmed live: real rows showed description but "(no ref)"/"(no date)")')
+{
+  // Real gap: some rows carry the reference ONLY in the anchor's title
+  // tooltip, not the visible text — and a date under a label wording
+  // ("Received Date:") the original three DATE_LABELS didn't cover.
+  const TITLE_ONLY_REF_HTML = `
+<ul id="searchresults">
+  <li class="searchresult">
+    <a href="/online-applications/applicationDetails.do?keyVal=REFONLY" title="24/AP/9001 - Erection of a single storey rear extension">Erection of a single storey rear extension</a>
+    <p class="address">5 Test Street, London SE1 2AB</p>
+    <p class="metaInfo">Status: Pending | Received Date: 14/03/2024</p>
+  </li>
+</ul>`
+  const [row1] = parseIdoxResultList(TITLE_ONLY_REF_HTML)
+  assert('reference found via the anchor title attribute, not just the visible link text', row1.reference === '24/AP/9001', row1.reference)
+  assert('"Received Date:" (word-order + optional "Date") label is recognised', row1.dateText === '14/03/2024', row1.dateText)
+
+  // Real gap: the reference can sit in a metaInfo line, separate from both
+  // the anchor text AND the address paragraph — the original extraction
+  // only ever looked at those two, so it would report "(no ref)" here.
+  const METAINFO_ONLY_REF_HTML = `
+<ul id="searchresults">
+  <li class="searchresult">
+    <a href="/online-applications/applicationDetails.do?keyVal=REFMETA">Alterations to shopfront</a>
+    <p class="address">7 Test Street, London SE1 2AB</p>
+    <p class="metaInfo">Ref. No: 24/AP/9002 | Decision Date: 01/04/2024</p>
+  </li>
+</ul>`
+  const [row2] = parseIdoxResultList(METAINFO_ONLY_REF_HTML)
+  assert('reference found in a metaInfo line, distinct from the anchor text or address', row2.reference === '24/AP/9002', row2.reference)
+  assert(
+    'an unrecognised date label ("Decision Date:") still yields the one obvious date on the row via the last-resort fallback',
+    row2.dateText === '01/04/2024',
+    row2.dateText,
+  )
+}
+
 console.log('\napplication-type classification')
 {
   assert(
@@ -106,6 +143,50 @@ console.log('\naddress matching — the discriminator, reproducing the manually-
     'the discriminator is reproduced: SBR\'s real record outranks the pub\'s real record in development-signal strength',
     APPLICATION_TYPE_STRENGTH[sbrMatches[0].applicationType] > APPLICATION_TYPE_STRENGTH[shipMatches[0].applicationType],
   )
+}
+
+console.log('\nmatchPlanningRows — loosened matching for two confirmed live gaps, without matching everything')
+{
+  // Gap 1: a query address with no postcode (exactly what this codebase's
+  // own callers pass — see SOUTHWARK_BRIDGE_ROAD_SEED.address and the
+  // planningCheck.ts cases) scored too low against a real row whose address
+  // carries a site/business-name prefix, because tokenOverlap divided by
+  // max(a,b) instead of the query's own token count — penalising the row
+  // for having MORE text than the query, exactly backwards.
+  const businessNamePrefixed = [
+    { reference: '23/AP/3411', address: 'The Ship, 68 Borough Road, London, SE1 1JX', description: 'Works to a Tree in a Conservation Area', detailUrl: 'u', dateText: '08/12/2023' },
+  ]
+  const pubMatches = matchPlanningRows(businessNamePrefixed, '68 Borough Road')
+  assert('a business-name-prefixed real address still matches a bare street+number query', pubMatches.length === 1 && pubMatches[0].reference === '23/AP/3411', pubMatches)
+
+  // Gap 2: a cross-boundary "Observations to Other Authorities" entry can be
+  // indexed under an address field that doesn't structurally read as a site
+  // address at all, while the real street+number are plainly named in the
+  // description — matchAddress's structured comparison has nothing to work
+  // with there, so mentionsTargetStreet is the deliberate loose fallback.
+  const variantAddressField = [
+    {
+      reference: '26/00849/OBS',
+      address: 'Cross-boundary consultation',
+      description: 'Observations re: 38-48 Southwark Bridge Road, partial demolition and change of use to co-living',
+      detailUrl: 'u',
+      dateText: '10/06/2026',
+    },
+  ]
+  const variantMatches = matchPlanningRows(variantAddressField, '38-48 Southwark Bridge Road')
+  assert(
+    "a row whose address field doesn't read as a site address, but whose DESCRIPTION names the real street+number, still matches",
+    variantMatches.length === 1 && variantMatches[0].reference === '26/00849/OBS',
+    variantMatches,
+  )
+
+  // Loosening must not mean matching everything: an address/description on
+  // a genuinely different street stays excluded.
+  const unrelated = [
+    { reference: '24/AP/0001', address: '12 Peckham High Street, London SE15 5DQ', description: 'Erection of a rear dormer', detailUrl: 'u', dateText: '01/01/2024' },
+  ]
+  const noMatches = matchPlanningRows(unrelated, '68 Borough Road')
+  assert('an unrelated street is still correctly excluded', noMatches.length === 0, noMatches)
 }
 
 console.log('\nsignal building — never fabricates a date')
@@ -212,6 +293,42 @@ console.log('\ncheckPlanningForAddress — unions results across ALL variants (t
     assert('both variants counted as "used" (both returned real, if different, pages)', result.variantsUsed.length === 2, result.variantsUsed)
     assert('the real record is found despite one variant returning nothing', result.matches.length === 1 && result.matches[0].reference === '23/AP/3411', result.matches)
     assert('date span is reported for the full-history sanity check', result.dateSpan?.earliest === '2023-12-08' && result.dateSpan?.latest === '2023-12-08', result.dateSpan)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+console.log('\ncheckPlanningForAddress — clears a pre-filled default date-range field before POSTing (full-history discipline)')
+{
+  // Real risk: preserving the form's own fields verbatim (needed to carry a
+  // hidden session/CSRF token through) could ALSO silently replay a
+  // pre-filled default recency window if Idox's form embeds one as a hidden
+  // or defaulted field — exactly the brief's original "90-day default" trap,
+  // through a different door.
+  const FORM_WITH_DATE_DEFAULT_HTML =
+    `<form action="simpleSearchResults.do" method="POST">` +
+    `<input type="hidden" name="token" value="tok-1" />` +
+    `<input type="hidden" name="searchCriteria.dateReceivedFrom" value="01/01/2026" />` +
+    `<input type="text" name="searchCriteria.simpleSearchString" value="" />` +
+    `</form>`
+
+  const originalFetch = globalThis.fetch
+  const calls: { url: string; method: string; body?: string }[] = []
+  // @ts-expect-error — test double
+  globalThis.fetch = async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method ?? 'GET', body: init?.body as string | undefined })
+    const kind = isFormRequest(url)
+    if (kind === 'simple') return mockResponse(FORM_WITH_DATE_DEFAULT_HTML, { setCookies: ['JSESSIONID=D1; Path=/'] })
+    if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=D2; Path=/'] })
+    return mockResponse(RESULTS_HTML)
+  }
+
+  try {
+    await checkPlanningForAddress('anywhere')
+    const simplePost = calls.find((c) => c.url.includes('simpleSearchResults'))
+    assert('the pre-filled date-range FIELD is stripped before the POST, not silently replayed', !simplePost?.body?.includes('dateReceivedFrom'), simplePost?.body)
+    assert('the pre-filled date VALUE is gone too, not just renamed', !simplePost?.body?.includes('01%2F01%2F2026') && !simplePost?.body?.includes('01/01/2026'), simplePost?.body)
+    assert("the form's OTHER (non-date) hidden field still survives", Boolean(simplePost?.body?.includes('token=tok-1')), simplePost?.body)
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -34,6 +34,20 @@ console.log('\naddress matching')
 
   const fuzzy = matchAddress('Southwark Bridge Road SE1 9BB', 'Bridge Road SE1 9BB')
   assert('same postcode, partial tokens → matched but not exact', fuzzy.score >= 0.7 && !fuzzy.exact, fuzzy)
+
+  // Real bug, confirmed live via planning.ts: a minimal query address (no
+  // postcode — exactly what several callers in this codebase pass) scored
+  // too low against a candidate whose address carries EXTRA descriptive
+  // words (a site/business name prefix), because token overlap divided by
+  // max(query, candidate) instead of the query's own length — penalising
+  // the candidate for having more text than the query, backwards from what
+  // "does the query's address appear in this record" should mean.
+  const extraWordsInCandidate = matchAddress('68 Borough Road', 'The Ship, 68 Borough Road, London, SE1 1JX')
+  assert(
+    "a candidate with EXTRA words (a business-name prefix) isn't penalised for having more text than a bare query",
+    extraWordsInCandidate.score >= 0.6,
+    extraWordsInCandidate,
+  )
 }
 
 function sig(p: Partial<Signal> & Pick<Signal, 'layer' | 'factType' | 'confidence' | 'observedAt'>): Signal {

@@ -53,11 +53,18 @@ export function parseAddress(raw: string): ParsedAddress {
   return { raw, postcode, district, buildingNumber, tokens }
 }
 
+/** How much of query `a` is covered by candidate `b` — recall against the
+ *  query, not a symmetric Jaccard overlap. A candidate address that ALSO
+ *  carries extra descriptive words (a site/business name prefix like "The
+ *  Ship, 68 Borough Road") should score the same as a bare match, not be
+ *  penalised for having more text than the query. Dividing by max(a,b)
+ *  instead of a.length was a real bug: it silently downgraded exactly the
+ *  common case of a minimal query address against a richer real record. */
 function tokenOverlap(a: string[], b: string[]): number {
   if (a.length === 0 || b.length === 0) return 0
   const setB = new Set(b)
   const shared = a.filter((t) => setB.has(t)).length
-  return shared / Math.max(a.length, b.length)
+  return shared / a.length
 }
 
 export interface MatchResult {

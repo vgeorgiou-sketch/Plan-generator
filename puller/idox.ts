@@ -31,7 +31,16 @@ export function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim()
 }
 
-const DATE_LABELS = [/Registered(?:\s*Date)?:?\s*([\d/]{6,10})/i, /Valid(?:ation)? ?Date:?\s*([\d/]{6,10})/i, /Received:?\s*([\d/]{6,10})/i]
+// Confirmed live: real result rows carry a date, just not always under one
+// of the label wordings first assumed — broadened to the common Idox
+// variants (label-before-value, "Date X" word order, with/without colon).
+const DATE_LABELS = [
+  /Registered(?:\s*Date)?:?\s*([\d/]{6,10})/i,
+  /Valid(?:ation)?(?:\s*Date)?:?\s*([\d/]{6,10})/i,
+  /Received(?:\s*Date)?:?\s*([\d/]{6,10})/i,
+  /Date\s*Received:?\s*([\d/]{6,10})/i,
+  /Application\s*Received:?\s*([\d/]{6,10})/i,
+]
 
 function extractDateText(block: string): string | undefined {
   const plain = stripTags(block)
@@ -39,7 +48,14 @@ function extractDateText(block: string): string | undefined {
     const m = plain.match(pattern)
     if (m) return m[1]
   }
-  return undefined
+  // Last resort, not a fabrication: a short result-list row rarely carries
+  // more than one date. If none of the known labels matched — Idox's exact
+  // wording varies between installs — but there's still one obvious
+  // UK-date-shaped token in the row, it's almost certainly the real one;
+  // extend DATE_LABELS above instead of relying on this once the real
+  // label wording is confirmed.
+  const anyDate = plain.match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/)
+  return anyDate ? anyDate[0] : undefined
 }
 
 /** UK "DD/MM/YYYY" (Idox's usual date format) → ISO "YYYY-MM-DD", or
@@ -62,13 +78,21 @@ export function parseIdoxResultList(html: string, base = IDOX_BASE): IdoxResultR
   const rows: IdoxResultRow[] = []
   const blocks = html.match(/<li[^>]*class="[^"]*searchresult[^"]*"[\s\S]*?<\/li>/gi) ?? []
   for (const block of blocks) {
-    const anchor = block.match(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i)
+    const anchor = block.match(/<a\b([^>]*)>([\s\S]*?)<\/a>/i)
     if (!anchor) continue
-    const href = anchor[1].replace(/&amp;/g, '&')
+    const anchorAttrs = anchor[1]
+    const href = (anchorAttrs.match(/href=["']([^"']+)["']/i)?.[1] ?? '').replace(/&amp;/g, '&')
+    if (!href) continue
+    const titleAttr = anchorAttrs.match(/title=["']([^"']*)["']/i)?.[1]
     const description = stripTags(anchor[2])
     const addrMatch = block.match(/<p[^>]*class="[^"]*address[^"]*"[^>]*>([\s\S]*?)<\/p>/i)
     const address = addrMatch ? stripTags(addrMatch[1]) : ''
-    const refMatch = (description + ' ' + address).match(REFERENCE)
+    // Confirmed live: the reference isn't always inside the anchor text or
+    // address line — it can sit in a separate metaInfo element, or only in
+    // the anchor's title tooltip. Search the WHOLE row (every text node,
+    // plus the title attribute) rather than just those two fields.
+    const refSearchText = stripTags(block) + (titleAttr ? ' ' + decodeEntities(titleAttr) : '')
+    const refMatch = refSearchText.match(REFERENCE)
     rows.push({
       reference: refMatch ? refMatch[0] : '',
       address,

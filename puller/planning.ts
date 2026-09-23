@@ -59,7 +59,7 @@
 */
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, parseIdoxForm, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
-import { matchAddress } from './addressMatch.ts'
+import { matchAddress, parseAddress, type ParsedAddress } from './addressMatch.ts'
 import { collectCookiePairs, detectProxyUrl, proxyDispatcher, BOT_USER_AGENT } from './netEnv.ts'
 import { snippet } from './jsonResponse.ts'
 import type { Signal } from '../signal-model/types.ts'
@@ -184,6 +184,16 @@ async function runSearchVariant(variant: PlanningSearchVariant, address: string,
   }
 
   const fields = new URLSearchParams(form.fields)
+  // Preserving the form's OWN fields verbatim is how a hidden session/CSRF
+  // token survives the round trip — but Idox's form can ALSO carry a
+  // pre-filled default recency window (e.g. searchCriteria.dateReceivedFrom/
+  // To) as a hidden or defaulted field. Blindly replaying that would
+  // silently reintroduce the brief's original "90-day default" trap through
+  // a different door. Full history means clearing anything date-range-
+  // shaped, not trusting that it's already blank.
+  for (const key of [...fields.keys()]) {
+    if (/date/i.test(key)) fields.delete(key)
+  }
   fields.set(variant.fieldName, address)
   const submitUrl = withQueryParam(form.action, 'action', 'firstPage')
 
@@ -241,15 +251,46 @@ export interface MatchedPlanningRow extends IdoxResultRow {
 }
 
 /**
+ * Does the target's street name(s) and building number turn up — as plain
+ * substrings, not a structured comparison — anywhere in a row's address OR
+ * description? A deliberately loose second pass alongside matchAddress's
+ * score: confirmed live that some real records (a cross-boundary
+ * "Observations to Other Authorities" entry, in particular) can be indexed
+ * under an address field that doesn't structurally line up the way a
+ * straightforward site address does, while still plainly mentioning the
+ * street in the free text somewhere. Requiring ALL of the target's tokens
+ * (not just one) keeps this from matching on a single common word shared
+ * by an unrelated street of the same name pattern.
+ */
+function mentionsTargetStreet(row: IdoxResultRow, target: ParsedAddress): boolean {
+  if (!target.tokens.length) return false
+  const haystack = `${row.address} ${row.description}`.toUpperCase()
+  if (!target.tokens.every((t) => haystack.includes(t))) return false
+  if (target.buildingNumber && !haystack.includes(target.buildingNumber)) return false
+  return true
+}
+
+/**
  * Rows whose ADDRESS actually matches the target site — Idox's own search
  * can be loose (partial street/keyword matches). Standing rule: match the
  * real site, not a registered office — this is exactly the corroboration
  * the sweep's registered-office-guessed buildings need.
+ *
+ * Deliberately loose on purpose, confirmed necessary live: the structured
+ * matchAddress score alone missed real, known-correct records (a query
+ * address with no postcode, scored against a row whose address carries an
+ * extra site/business-name prefix, understated the match). A row counts as
+ * a match if EITHER matchAddress clears the threshold OR its address/
+ * description plainly mentions the target's street name(s) and number
+ * (mentionsTargetStreet) — never the reverse, so this only ever loosens,
+ * it doesn't relax the postcode-conflict hard-zero guard inside
+ * matchAddress itself.
  */
-export function matchPlanningRows(rows: IdoxResultRow[], targetAddress: string, threshold = 0.6): MatchedPlanningRow[] {
+export function matchPlanningRows(rows: IdoxResultRow[], targetAddress: string, threshold = 0.5): MatchedPlanningRow[] {
+  const target = parseAddress(targetAddress)
   return rows
     .map((r) => ({ ...r, matchScore: matchAddress(targetAddress, r.address).score, applicationType: classifyApplicationType(r.description) }))
-    .filter((r) => r.matchScore >= threshold)
+    .filter((r) => r.matchScore >= threshold || mentionsTargetStreet(r, target))
     .sort((a, b) => b.matchScore - a.matchScore)
 }
 
