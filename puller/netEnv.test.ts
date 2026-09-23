@@ -1,10 +1,14 @@
 /*
   Run: node --experimental-strip-types puller/netEnv.test.ts
-  Proves proxy-env detection offline — the env vars are read correctly and
-  in the right precedence, without touching the network.
+  Proves proxy-env detection, TLS-variant auto-resolution, and cookie
+  extraction offline — the env vars are read correctly, the resolver tries
+  variants in order and caches per host, the insecure variant is NEVER
+  attempted automatically, and cookie extraction correctly separates
+  multiple Set-Cookie headers (a NetScaler persistence cookie alongside a
+  JSESSIONID) rather than losing one to a naive comma-join.
 */
 
-import { detectProxyUrl } from './netEnv.ts'
+import { collectCookiePairs, detectProxyUrl, resolveWorkingTlsAgent, TLS_VARIANTS } from './netEnv.ts'
 
 let failures = 0
 function assert(name: string, cond: boolean, detail?: unknown) {
@@ -46,6 +50,78 @@ try {
 } finally {
   clearAll()
   for (const k of ENV_KEYS) if (saved[k] !== undefined) process.env[k] = saved[k]
+}
+
+console.log('\nTLS_VARIANTS shape')
+{
+  const insecure = TLS_VARIANTS.filter((v) => v.insecure)
+  assert('exactly one variant is flagged insecure', insecure.length === 1, insecure)
+  assert('the insecure variant is the certificate-bypass one', insecure[0]?.connect?.rejectUnauthorized === false, insecure[0])
+  assert('at least one safe variant forces TLS 1.2 (the documented NetScaler fix)', TLS_VARIANTS.some((v) => !v.insecure && v.connect?.maxVersion === 'TLSv1.2'))
+}
+
+console.log('\nresolveWorkingTlsAgent — tries variants until one connects, NEVER the insecure one')
+{
+  const originalFetch = globalThis.fetch
+  let callCount = 0
+  // Every SAFE variant "fails" (simulating a handshake error); if the
+  // insecure variant were ever tried, this mock would still throw for it
+  // too (it isn't special-cased to succeed), so a false pass is impossible.
+  globalThis.fetch = async () => {
+    callCount++
+    throw new Error('simulated: failed to decrypt data, need more data')
+  }
+
+  try {
+    const agent = await resolveWorkingTlsAgent('https://never-connects.invalid.test/')
+    assert('returns undefined when nothing works', agent === undefined)
+    assert('tried exactly the SAFE variants (5), never the 6th insecure one', callCount === TLS_VARIANTS.filter((v) => !v.insecure).length, callCount)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+console.log('\nresolveWorkingTlsAgent — adopts the first variant that connects, and caches per host')
+{
+  const originalFetch = globalThis.fetch
+  let callCount = 0
+  const WINNING_ATTEMPT = 2 // simulate: default fails, "force TLS 1.2" succeeds
+  globalThis.fetch = async () => {
+    callCount++
+    if (callCount < WINNING_ATTEMPT) throw new Error('simulated handshake failure')
+    return { body: null } as unknown as Response
+  }
+
+  try {
+    const agent = await resolveWorkingTlsAgent('https://sometimes-connects.invalid.test/')
+    assert('returns a real Agent once one variant succeeds', agent !== undefined, agent)
+    assert('stopped trying once one worked (did not exhaust all variants)', callCount === WINNING_ATTEMPT, callCount)
+
+    const before = callCount
+    const cached = await resolveWorkingTlsAgent('https://sometimes-connects.invalid.test/')
+    assert('a second call for the SAME host reuses the cached result — no new fetch calls', callCount === before, { before, after: callCount })
+    assert('the cached agent is the same instance', cached === agent)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+console.log('\ncollectCookiePairs — separates multiple Set-Cookie headers (NetScaler persistence + JSESSIONID)')
+{
+  const withCookies = {
+    headers: { getSetCookie: () => ['JSESSIONID=ABC123; Path=/online-applications/; HttpOnly', 'NSC_mc=xyz789; path=/; Secure; HttpOnly'] },
+  } as unknown as Response
+  assert(
+    'both name=value pairs are extracted, attributes (Path/Secure/HttpOnly) stripped',
+    JSON.stringify(collectCookiePairs(withCookies)) === JSON.stringify(['JSESSIONID=ABC123', 'NSC_mc=xyz789']),
+    collectCookiePairs(withCookies),
+  )
+
+  const noCookies = { headers: { getSetCookie: () => [] } } as unknown as Response
+  assert('no Set-Cookie header at all → empty array, not a crash', collectCookiePairs(noCookies).length === 0)
+
+  const noMethodAtAll = { headers: {} } as unknown as Response
+  assert('a Headers-like object with no getSetCookie at all → empty array, not a crash', collectCookiePairs(noMethodAtAll).length === 0)
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)

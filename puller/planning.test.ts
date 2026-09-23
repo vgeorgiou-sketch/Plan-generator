@@ -29,6 +29,19 @@ function assert(name: string, cond: boolean, detail?: unknown) {
   }
 }
 
+// Every checkPlanningForAddress test below mocks globalThis.fetch and counts
+// calls. planning.ts falls back to resolveWorkingTlsAgent() — which makes
+// its OWN real fetch calls to probe TLS variants — whenever no proxy is
+// configured. Whether that's true depends on the AMBIENT environment the
+// test happens to run in (this very sandbox has one set), which would make
+// call-count assertions flake by machine. Pin it: force a (fake, unused —
+// fetch is fully mocked below, so nothing ever really connects through it)
+// proxy so proxyDispatcher() always short-circuits resolveDispatcher(),
+// keeping call counts deterministic regardless of the ambient environment.
+const savedProxyEnv = { HTTPS_PROXY: process.env.HTTPS_PROXY, https_proxy: process.env.https_proxy }
+process.env.HTTPS_PROXY = 'http://test-proxy.invalid:0'
+delete process.env.https_proxy
+
 // The REAL, manually-verified records for both known cases (not fictional).
 // Southwark Bridge Road: ref 26/00849/OBS, 10 June 2026, change of use to
 // co-living. The Ship: ref 23/AP/3411, 8 Dec 2023, tree works — its ONLY
@@ -130,6 +143,20 @@ console.log('\nfull-history discipline: no date-range parameter is ever sent')
   }
 }
 
+/** A minimally-real mock Response — has the `.headers.getSetCookie()` shape
+ *  fetchPlanningPage actually calls, so a test double can't silently pass by
+ *  omitting a method the real code depends on. */
+function mockResponse(body: string, opts: { ok?: boolean; status?: number; setCookies?: string[] } = {}): Response {
+  return {
+    ok: opts.ok ?? true,
+    status: opts.status ?? 200,
+    text: async () => body,
+    headers: { getSetCookie: () => opts.setCookies ?? [] },
+  } as unknown as Response
+}
+
+const WARMUP_URL_SUFFIX = '/online-applications/'
+
 console.log('\ncheckPlanningForAddress — unions results across ALL variants (the actual fix)')
 {
   // Simulate the exact failure mode the brief warned about: variant A
@@ -145,14 +172,14 @@ console.log('\ncheckPlanningForAddress — unions results across ALL variants (t
   // @ts-expect-error — test double, not a full fetch implementation
   globalThis.fetch = async (url: string) => {
     callCount++
+    if (url.endsWith(WARMUP_URL_SUFFIX)) return mockResponse('<html>warm-up page</html>', { setCookies: ['JSESSIONID=ABC123; Path=/'] })
     const isNarrowVariant = url.includes('simpleSearchResults')
-    const body = isNarrowVariant ? NARROW_HTML : FULL_HTML
-    return { ok: true, text: async () => body } as Response
+    return mockResponse(isNarrowVariant ? NARROW_HTML : FULL_HTML)
   }
 
   try {
     const result = await checkPlanningForAddress('68 Borough Road')
-    assert('both variants were actually called', callCount === 2, callCount)
+    assert('warm-up + both variants were called (3 total)', callCount === 3, callCount)
     assert('both variants counted as "used" (both returned real, if different, pages)', result.variantsUsed.length === 2, result.variantsUsed)
     assert('the real record is found despite one variant returning nothing', result.matches.length === 1 && result.matches[0].reference === '23/AP/3411', result.matches)
     assert('date span is reported for the full-history sanity check', result.dateSpan?.earliest === '2023-12-08' && result.dateSpan?.latest === '2023-12-08', result.dateSpan)
@@ -161,10 +188,42 @@ console.log('\ncheckPlanningForAddress — unions results across ALL variants (t
   }
 }
 
+console.log('\ncheckPlanningForAddress — acquires a session cookie and threads it into every variant')
+{
+  // Confirmed via a real browser session: the site sets JSESSIONID (and,
+  // behind the NetScaler, its own persistence cookie) on the very first
+  // request. Both must be captured (getSetCookie, not the lossy get()) and
+  // replayed on every subsequent search request.
+  const originalFetch = globalThis.fetch
+  const capturedHeaders: Record<string, string>[] = []
+  // @ts-expect-error — test double
+  globalThis.fetch = async (url: string, init?: RequestInit) => {
+    capturedHeaders.push({ ...(init?.headers as Record<string, string>) })
+    if (url.endsWith(WARMUP_URL_SUFFIX)) {
+      return mockResponse('<html>warm-up page</html>', { setCookies: ['JSESSIONID=ABC123; Path=/; HttpOnly', 'NSC_mc=xyz789; Secure; HttpOnly'] })
+    }
+    return mockResponse(RESULTS_HTML)
+  }
+
+  try {
+    await checkPlanningForAddress('68 Borough Road')
+    assert('exactly 3 requests: 1 warm-up + 2 variants', capturedHeaders.length === 3, capturedHeaders.length)
+    assert('the warm-up request itself carries no cookie yet', !('Cookie' in capturedHeaders[0]), capturedHeaders[0])
+    const variantHeaders = capturedHeaders.slice(1)
+    assert(
+      'BOTH cookies (JSESSIONID + the NetScaler NSC_ persistence cookie) are threaded into every variant request',
+      variantHeaders.every((h) => h.Cookie === 'JSESSIONID=ABC123; NSC_mc=xyz789'),
+      variantHeaders,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
 console.log('\ncheckPlanningForAddress — genuinely inconclusive is never reported as "confirmed empty"')
 {
   const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => ({ ok: false, status: 403, text: async () => '' }) as Response
+  globalThis.fetch = async () => mockResponse('', { ok: false, status: 403 })
 
   try {
     const result = await checkPlanningForAddress('anywhere')
@@ -175,6 +234,10 @@ console.log('\ncheckPlanningForAddress — genuinely inconclusive is never repor
     globalThis.fetch = originalFetch
   }
 }
+
+if (savedProxyEnv.HTTPS_PROXY === undefined) delete process.env.HTTPS_PROXY
+else process.env.HTTPS_PROXY = savedProxyEnv.HTTPS_PROXY
+if (savedProxyEnv.https_proxy !== undefined) process.env.https_proxy = savedProxyEnv.https_proxy
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'}`)
 process.exit(failures === 0 ? 0 : 1)

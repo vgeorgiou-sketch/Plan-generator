@@ -52,7 +52,7 @@
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
 import { matchAddress } from './addressMatch.ts'
-import { detectProxyUrl, proxyDispatcher, BOT_USER_AGENT } from './netEnv.ts'
+import { collectCookiePairs, detectProxyUrl, proxyDispatcher, resolveWorkingTlsAgent, BOT_USER_AGENT } from './netEnv.ts'
 import type { Signal } from '../signal-model/types.ts'
 
 export interface PlanningSearchVariant {
@@ -80,22 +80,30 @@ export interface FetchPlanningOptions {
   /** Defaults to the honest, self-identifying bot UA. Override once
    *  planning-probe.ts has confirmed a browser UA is actually needed. */
   userAgent?: string
-  /** A session cookie to replay, if planning-probe.ts confirms Idox's
-   *  address search needs one (unlike the weekly list's stateless GET). */
+  /** A session cookie to replay. When omitted, checkPlanningForAddress
+   *  acquires one itself via a warm-up request — pass this explicitly only
+   *  to override that (e.g. from planning-probe.ts's own diagnostics). */
   cookie?: string
 }
 
-/**
- * A corporate/office proxy is applied automatically whenever HTTPS_PROXY
- * (or the lowercase variant) is set — Node's fetch does not do this on its
- * own (see netEnv.ts). This is the high-confidence half of "why does this
- * open in a browser but not here"; User-Agent and session-cookie needs are
- * the other, genuinely uncertain half — see planning-probe.ts, which tests
- * both and reports which combination actually works before either becomes
- * this function's default.
- */
-export async function fetchPlanningSearchHtml(url: string, opts: FetchPlanningOptions = {}): Promise<string> {
-  const dispatcher = proxyDispatcher()
+/** A corporate proxy takes priority when configured; otherwise fall back to
+ *  whichever safe TLS variant actually completes a handshake with this host
+ *  (see netEnv.ts — confirmed necessary for planning.southwark.gov.uk,
+ *  which sits behind a Citrix NetScaler that Node/undici's OpenSSL-based
+ *  TLS stack cannot negotiate with using its untouched defaults). */
+async function resolveDispatcher(url: string) {
+  return proxyDispatcher() ?? (await resolveWorkingTlsAgent(url))
+}
+
+export interface PlanningPageResult {
+  html: string
+  /** "name=value" pairs from this response's Set-Cookie header(s) — a
+   *  NetScaler persistence cookie (NSC_...) and/or JSESSIONID, if set. */
+  cookies: string[]
+}
+
+async function fetchPlanningPage(url: string, opts: FetchPlanningOptions = {}): Promise<PlanningPageResult> {
+  const dispatcher = await resolveDispatcher(url)
   const headers: Record<string, string> = { 'User-Agent': opts.userAgent ?? BOT_USER_AGENT }
   if (opts.cookie) headers['Cookie'] = opts.cookie
 
@@ -111,11 +119,30 @@ export async function fetchPlanningSearchHtml(url: string, opts: FetchPlanningOp
       'Southwark planning search request failed. If this address opens fine in a browser, the ' +
         'likely cause is NOT that the site is unreachable — check: (1) a corporate proxy the browser ' +
         `uses silently (set HTTPS_PROXY${detectProxyUrl() ? ` — one IS detected: ${detectProxyUrl()}, but the connection still failed` : ' — none is currently set'}); ` +
-        `(2) User-Agent/session requirements — run puller/planning-probe.ts, which tests both. Cause: ${(cause as Error).message}`,
+        '(2) a TLS-negotiation incompatibility — confirmed before for this exact host (a Citrix NetScaler ' +
+        'that Node/undici cannot handshake with on defaults); resolveWorkingTlsAgent should already have tried ' +
+        'the known fixes, so if this still fails, run puller/planning-probe.ts for a fresh diagnosis; ' +
+        `(3) User-Agent/session requirements — also tested by the same probe. Cause: ${(cause as Error).message}`,
     )
   }
   if (!res.ok) throw new Error(`Southwark planning search ${res.status}`)
-  return res.text()
+  return { html: await res.text(), cookies: collectCookiePairs(res) }
+}
+
+export async function fetchPlanningSearchHtml(url: string, opts: FetchPlanningOptions = {}): Promise<string> {
+  return (await fetchPlanningPage(url, opts)).html
+}
+
+/**
+ * GET the search entry page to acquire the session Idox's search flow
+ * needs — confirmed via a real browser session (curl gets a JSESSIONID on
+ * the very first request; the NetScaler in front adds its own persistence
+ * cookie too). A stateless single GET with no cookie may not carry Idox's
+ * server-side search state the way a browser's session does.
+ */
+export async function fetchSessionCookies(opts: FetchPlanningOptions = {}): Promise<string | undefined> {
+  const { cookies } = await fetchPlanningPage(`${IDOX_BASE}/`, opts)
+  return cookies.length ? cookies.join('; ') : undefined
 }
 
 // ── application-type classification (from proposal text — Idox rarely
@@ -218,14 +245,16 @@ export interface PlanningCheckResult {
 }
 
 /**
- * Safe, per-address planning check. Runs EVERY search variant — not just
- * the first that returns a real page — and unions their rows (deduped by
- * reference): different Idox entry points can apply different defaults, so
- * relying on only one risks silently missing older records exactly the way
- * the brief's own manual check nearly did. Never throws: a failed/
- * undiagnosable check comes back `checked: false` with the error explained,
- * so absence-because-we-couldn't-check is never confused with absence-
- * because-we-confirmed-there's-nothing.
+ * Safe, per-address planning check. Acquires a session cookie first (unless
+ * one was passed in) — confirmed necessary via a real browser session —
+ * then runs EVERY search variant with it, not just the first that returns a
+ * real page, unioning their rows (deduped by reference): different Idox
+ * entry points can apply different defaults, so relying on only one risks
+ * silently missing older records exactly the way the brief's own manual
+ * check nearly did. Never throws: a failed/undiagnosable check comes back
+ * `checked: false` with the error explained, so absence-because-we-
+ * couldn't-check is never confused with absence-because-we-confirmed-
+ * there's-nothing.
  */
 export async function checkPlanningForAddress(address: string, opts: FetchPlanningOptions = {}): Promise<PlanningCheckResult> {
   const errors: string[] = []
@@ -233,9 +262,19 @@ export async function checkPlanningForAddress(address: string, opts: FetchPlanni
   const seen = new Set<string>()
   const rows: IdoxResultRow[] = []
 
+  let cookie = opts.cookie
+  if (cookie === undefined) {
+    try {
+      cookie = await fetchSessionCookies(opts)
+    } catch (err) {
+      errors.push(`session warm-up failed, continuing without a cookie: ${(err as Error).message}`)
+    }
+  }
+  const variantOpts: FetchPlanningOptions = { ...opts, cookie }
+
   for (const variant of planningSearchVariants(address)) {
     try {
-      const html = await fetchPlanningSearchHtml(variant.url, opts)
+      const html = await fetchPlanningSearchHtml(variant.url, variantOpts)
       if (!looksLikeIdoxResultsPage(html)) {
         errors.push(`${variant.name}: page did not look like a real results page (session/login/error page?)`)
         continue

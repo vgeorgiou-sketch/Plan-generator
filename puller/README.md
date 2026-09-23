@@ -120,29 +120,51 @@ this, ALL egress-blocked** (`planning.data.gov.uk`, bare `www.gov.uk`, and
    not built against (their windows are 90 days; someone else's scrape
    isn't a production dependency).
 
-**"It opens in my browser but Node can't reach it" — not a firewall, a
-missing proxy config, most likely.** A browser auto-detects an office HTTP
-proxy (WPAD/PAC/OS settings); Node's `fetch` does not — a real, well-known
-gap, not a bug here. `netEnv.ts` detects `HTTPS_PROXY`/`HTTP_PROXY` (and
+**"It opens in my browser but Node can't reach it" — root-caused via a live
+curl diagnosis, not guessed.** Two candidate causes were checked. (1) An
+office HTTP proxy a browser auto-detects (WPAD/PAC/OS settings) but Node's
+`fetch` doesn't — `netEnv.ts` detects `HTTPS_PROXY`/`HTTP_PROXY` (and
 lowercase) and wires an explicit `undici` `ProxyAgent` per request
 (deliberately not global — it shouldn't silently reroute the Companies
-House/EPC clients too). This is applied **automatically** in
-`fetchPlanningSearchHtml` whenever the env var is set; no flag needed.
+House/EPC clients too), applied automatically whenever the env var is set.
+This turned out NOT to be the cause here (`curl -v` succeeded directly,
+same as the browser), but the detection stays — a real fix for a different
+office network. (2) The actual cause, confirmed by `curl -v` on the user's
+machine: a **TLS-negotiation incompatibility**. curl (Windows' Schannel
+backend) recovers silently from a `failed to decrypt data, need more data`
+handshake hiccup; Node/undici's OpenSSL-based stack does not, and the
+`fetch` fails at the connection level before any HTTP response exists. The
+server sits behind a Citrix NetScaler (`X-Via-NSCOPI` header, an `NSC_`
+cookie) — a documented source of exactly this interop failure against
+strict, modern TLS clients.
 
-The other candidate cause — Idox rejecting non-browser requests — is
-**not** assumed either way. `planning-probe.ts` is a diagnostic **funnel**:
-(1) connectivity, direct vs. proxy; (2) User-Agent sensitivity (bot vs. a
-realistic browser string), only if (1) found a working connection; (3)
-session-cookie need (a warm-up request, capturing `Set-Cookie`, replayed on
-the actual search), only if (2) resolved. Finishes by running both known
-addresses with whatever combination worked and checking for the exact
-confirmed reference. Every step reports real evidence (status, body
-snippet) — nothing here guesses which cause it is; the probe's output
-determines it. Once you've run it, paste the output back and I'll wire the
-winning combination into `checkPlanningForAddress` as the real default —
-right now it still defaults to the honest bot UA and no forced cookie,
-since baking in an unconfirmed guess would repeat the exact mistake this
-whole file exists to avoid.
+`resolveWorkingTlsAgent()` (`netEnv.ts`) tries a ranked list of **safe**
+`undici` `Agent` `connect` overrides — force TLS 1.2, disable session
+tickets, relax the OpenSSL security level, force ALPN to HTTP/1.1 — against
+the real host and adopts whichever one actually completes a handshake,
+caching the result per host so it only probes once. A **sixth**,
+certificate-bypass variant (`rejectUnauthorized: false`) exists purely as a
+diagnostic — proving the failure is a cert problem rather than a
+protocol/cipher one — and is categorically excluded from ever being
+auto-adopted (`netEnv.test.ts` proves it's never even attempted by the
+resolver). `checkPlanningForAddress` also now acquires the Idox session
+cookie automatically: a warm-up GET captures **every** `Set-Cookie` header
+via `getSetCookie()` (not the lossy, comma-joined `get('set-cookie')`, which
+would silently drop either the `JSESSIONID` or the NetScaler's own `NSC_`
+persistence cookie), and threads the joined pair into every subsequent
+search-variant request. None of this needs a flag — it's automatic in
+`fetchPlanningSearchHtml`/`checkPlanningForAddress`, so `sweep.ts` and
+`planningCheck.ts` benefit without any change on their end.
+
+`planning-probe.ts` reports, per TLS variant, which one(s) actually
+complete a handshake against the real host — the direct evidence, not a
+guess — then runs User-Agent sensitivity and finally the real
+`checkPlanningForAddress` against both known addresses. This sandbox's own
+network policy blocks the host outright before any TLS negotiation begins,
+so a run here only proves the code doesn't crash and fails gracefully with
+a descriptive error — it cannot confirm which TLS variant fixes the real
+NetScaler handshake. That confirmation can only come from running
+`planning-probe.ts` on the actual office machine that reproduced this.
 
 **CRITICAL — full history, never a rolling window.** A manual check nearly
 reached a wrong verdict on a default 90-day view; the real Southwark Bridge
