@@ -71,12 +71,31 @@
   never silently swallowed. sweep.ts also paces its own calls (3-5s apart)
   so a burst doesn't trip the limit in the first place — the retry here is
   the safety net, not the primary fix.
+
+  CONFIRMED live once the pacing fix above landed (zero 429s): every
+  candidate's planning check then failed with "page did not look like a
+  real results page" — while the IDENTICAL checkPlanningForAddress path
+  kept working perfectly for a single address (planningCheck.ts). The
+  difference is the loop, not the code: fetchPlanningPage used Node's
+  shared/global connection pool, so a kept-alive TCP socket to
+  planning.southwark.gov.uk could get reused across candidates. Southwark's
+  NetScaler can pin session state to a specific backend via connection
+  stickiness, independent of whatever Cookie header this codebase sends
+  correctly on every request — one candidate's check could land on a
+  connection whose backend still thought a DIFFERENT candidate's session
+  was live, and hand back a login/session page instead of real results.
+  checkPlanningForAddress now creates a brand-new, single-use dispatcher
+  per call (createSessionDispatcher) — never the shared pool — so no
+  socket from one address's check can ever be reused by another's,
+  matching planningCheck.ts's per-address isolation exactly rather than
+  incidentally.
 */
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, parseIdoxForm, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
 import { matchAddress, parseAddress, type ParsedAddress } from './addressMatch.ts'
 import { collectCookiePairs, detectProxyUrl, proxyDispatcher, sleep, BOT_USER_AGENT } from './netEnv.ts'
 import { snippet } from './jsonResponse.ts'
+import { Agent, ProxyAgent, type Dispatcher } from 'undici'
 import type { Signal } from '../signal-model/types.ts'
 
 export interface PlanningSearchVariant {
@@ -121,6 +140,11 @@ export interface FetchPlanningOptions {
 interface PlanningRequestInit extends FetchPlanningOptions {
   method?: 'GET' | 'POST'
   body?: string
+  /** Overrides netEnv.ts's shared proxyDispatcher() for this request.
+   *  checkPlanningForAddress always sets this to a fresh, single-use
+   *  dispatcher (see createSessionDispatcher) so one address's requests
+   *  never share a connection with another's. */
+  dispatcher?: Dispatcher
 }
 
 export interface PlanningPageResult {
@@ -145,7 +169,7 @@ function parseRetryAfterMs(header: string | null): number | undefined {
 }
 
 async function fetchPlanningPage(url: string, opts: PlanningRequestInit = {}): Promise<PlanningPageResult> {
-  const dispatcher = proxyDispatcher()
+  const dispatcher = opts.dispatcher ?? proxyDispatcher()
   const headers: Record<string, string> = { 'User-Agent': opts.userAgent ?? BOT_USER_AGENT }
   if (opts.cookie) headers['Cookie'] = opts.cookie
   if (opts.body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded'
@@ -216,7 +240,7 @@ function withQueryParam(url: string, key: string, value: string): string {
  * 500ing without a session) direct GET, kept because it's real evidence of
  * what the results endpoint expects, not a fresh guess.
  */
-async function runSearchVariant(variant: PlanningSearchVariant, address: string, opts: FetchPlanningOptions): Promise<string> {
+async function runSearchVariant(variant: PlanningSearchVariant, address: string, opts: PlanningRequestInit): Promise<string> {
   const formPage = await fetchPlanningPage(variant.formUrl, opts)
   const cookie = formPage.cookies.length ? formPage.cookies.join('; ') : opts.cookie
 
@@ -387,6 +411,23 @@ export interface PlanningCheckResult {
 }
 
 /**
+ * A brand-new, single-use dispatcher for one checkPlanningForAddress call —
+ * never Node's shared/global connection pool. See this file's header for
+ * why: a pooled keep-alive socket to planning.southwark.gov.uk let a
+ * NetScaler pin session state to a specific backend by connection
+ * stickiness, independent of the Cookie header this codebase sends
+ * correctly on every request. `connections: 1` guarantees this instance
+ * can never even internally reuse a stale socket across the couple of
+ * requests one address check makes. When a corporate proxy is configured,
+ * a fresh ProxyAgent is used instead of netEnv.ts's shared/cached one, for
+ * the same reason — isolation, not just connectivity.
+ */
+function createSessionDispatcher(): Dispatcher {
+  const proxyUrl = detectProxyUrl()
+  return proxyUrl ? new ProxyAgent(proxyUrl) : new Agent({ connections: 1, pipelining: 0 })
+}
+
+/**
  * Safe, per-address planning check. Each search variant establishes its
  * own session (GET the form, POST the query with that session's cookie —
  * see runSearchVariant) and runs EVERY variant, not just the first that
@@ -398,31 +439,40 @@ export interface PlanningCheckResult {
  * the response body on a non-2xx — see runSearchVariant/fetchPlanningPage —
  * since Idox's error pages tend to name the exact problem), so absence-
  * because-we-couldn't-check is never confused with absence-because-we-
- * confirmed-there's-nothing.
+ * confirmed-there's-nothing. The whole call uses ONE dedicated dispatcher
+ * (see createSessionDispatcher) — isolated from every other address's
+ * check, including ones running earlier in the same process (e.g.
+ * sweep.ts's loop over candidates).
  */
 export async function checkPlanningForAddress(address: string, opts: FetchPlanningOptions = {}): Promise<PlanningCheckResult> {
   const errors: string[] = []
   const variantsUsed: string[] = []
   const seen = new Set<string>()
   const rows: IdoxResultRow[] = []
+  const dispatcher = createSessionDispatcher()
+  const sessionOpts: PlanningRequestInit = { ...opts, dispatcher }
 
-  for (const variant of planningSearchVariants()) {
-    try {
-      const html = await runSearchVariant(variant, address, opts)
-      if (!looksLikeIdoxResultsPage(html)) {
-        errors.push(`${variant.name}: page did not look like a real results page after the form→POST flow (session/login/error page?)`)
-        continue
+  try {
+    for (const variant of planningSearchVariants()) {
+      try {
+        const html = await runSearchVariant(variant, address, sessionOpts)
+        if (!looksLikeIdoxResultsPage(html)) {
+          errors.push(`${variant.name}: page did not look like a real results page after the form→POST flow (session/login/error page?) — body: ${snippet(html)}`)
+          continue
+        }
+        variantsUsed.push(variant.name)
+        for (const row of parseIdoxResultList(html)) {
+          const key = row.reference || `${row.address}|${row.description}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          rows.push(row)
+        }
+      } catch (err) {
+        errors.push(`${variant.name}: ${(err as Error).message}`)
       }
-      variantsUsed.push(variant.name)
-      for (const row of parseIdoxResultList(html)) {
-        const key = row.reference || `${row.address}|${row.description}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        rows.push(row)
-      }
-    } catch (err) {
-      errors.push(`${variant.name}: ${(err as Error).message}`)
     }
+  } finally {
+    await dispatcher.close().catch(() => {})
   }
 
   if (variantsUsed.length === 0) {

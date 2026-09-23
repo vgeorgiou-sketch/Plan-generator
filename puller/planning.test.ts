@@ -405,6 +405,48 @@ console.log('\ncheckPlanningForAddress — GETs the search form, then POSTs with
   }
 }
 
+console.log('\ncheckPlanningForAddress — each call gets its own isolated dispatcher, never a connection shared across candidates')
+{
+  // Confirmed live: once the rate-limit pacing fix landed (zero 429s),
+  // EVERY sweep candidate started failing with "page did not look like a
+  // real results page" — while the identical checkPlanningForAddress path
+  // kept working for a single address (planningCheck.ts). Root cause: a
+  // shared/pooled connection let Southwark's NetScaler pin session state to
+  // a backend across candidates, independent of the Cookie header sent.
+  // The fix is a brand-new dispatcher per call — this proves it's actually
+  // new EVERY time, not just constructed once and reused.
+  const originalFetch = globalThis.fetch
+  let dispatchers: unknown[] = []
+  // @ts-expect-error — test double
+  globalThis.fetch = async (url: string, init?: RequestInit) => {
+    dispatchers.push((init as { dispatcher?: unknown } | undefined)?.dispatcher)
+    const kind = isFormRequest(url)
+    if (kind === 'simple') return mockResponse(SIMPLE_FORM_HTML, { setCookies: ['JSESSIONID=ISO1; Path=/'] })
+    if (kind === 'advanced') return mockResponse(ADVANCED_FORM_HTML, { setCookies: ['JSESSIONID=ISO2; Path=/'] })
+    return mockResponse(RESULTS_HTML)
+  }
+
+  try {
+    await checkPlanningForAddress('candidate one address')
+    const firstCallDispatchers = dispatchers
+    assert('every request within ONE call shares the same dispatcher instance', new Set(firstCallDispatchers).size === 1, firstCallDispatchers)
+    assert('a dispatcher was actually passed, not left to a shared default', firstCallDispatchers[0] !== undefined)
+
+    dispatchers = []
+    await checkPlanningForAddress('candidate two, a completely different address')
+    const secondCallDispatchers = dispatchers
+
+    assert('the second call ALSO shares one dispatcher across its own requests', new Set(secondCallDispatchers).size === 1, secondCallDispatchers)
+    assert(
+      'the two calls use COMPLETELY DIFFERENT dispatcher instances — no connection pool shared between candidates',
+      firstCallDispatchers[0] !== secondCallDispatchers[0],
+      [firstCallDispatchers[0], secondCallDispatchers[0]],
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
 console.log('\ncheckPlanningForAddress — a non-2xx response body is captured, not swallowed (Idox error pages name the problem)')
 {
   const originalFetch = globalThis.fetch

@@ -333,6 +333,33 @@ fixes, addressing both the cause and the symptom:
   429 case, both with the retry delays collapsed to near-zero so the test
   itself stays fast without weakening what's actually under test.
 
+**Confirmed live once the pacing fix above landed (zero 429s): every
+candidate's planning check then failed with "page did not look like a real
+results page"** — while the IDENTICAL `checkPlanningForAddress` path kept
+working perfectly for a single address (`planningCheck.ts`). The
+difference was the loop, not the code: `fetchPlanningPage` used Node's
+shared/global connection pool, so a kept-alive TCP socket to
+`planning.southwark.gov.uk` could get reused across candidates. Southwark's
+NetScaler can pin session state to a specific backend via connection
+stickiness, independent of whatever `Cookie` header this codebase sends
+correctly on every request — one candidate's check could land on a
+connection whose backend still thought a DIFFERENT candidate's session was
+live, and hand back a login/session page instead of real results.
+`checkPlanningForAddress` now creates a brand-new, single-use `undici`
+dispatcher (`createSessionDispatcher` — a fresh `Agent({ connections: 1 })`,
+or a fresh `ProxyAgent` when a corporate proxy is configured) for EVERY
+call, used for every request that one address's check makes, then closes
+it when the call finishes. No socket from one candidate's check can ever
+be reused by another's — this is what makes the sweep behave exactly like
+`planningCheck.ts`'s per-address isolation, guaranteed rather than
+incidental. The "not a real results page" error also now captures a body
+snippet (the same discipline as the 500/429 cases above), so a genuine
+login/session page and some other non-results response (a WAF block, a
+malformed-query rejection) are distinguishable from the error text alone
+next time, rather than both looking identical. Proven in `planning.test.ts`
+by capturing the actual dispatcher object passed to `fetch()` across two
+separate calls and asserting they're never the same instance.
+
 **Dedupe: two different companies can share one registered office** (a
 formation agent, an accountant's address — confirmed live: 68 Borough Road
 and the M7 Blue Fin building each printed twice). `mergeGraphs`/
