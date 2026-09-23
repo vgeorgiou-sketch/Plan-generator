@@ -52,6 +52,7 @@
 
 import { looksLikeIdoxResultsPage, parseIdoxResultList, ukDateToIso, IDOX_BASE, type IdoxResultRow } from './idox.ts'
 import { matchAddress } from './addressMatch.ts'
+import { detectProxyUrl, proxyDispatcher, BOT_USER_AGENT } from './netEnv.ts'
 import type { Signal } from '../signal-model/types.ts'
 
 export interface PlanningSearchVariant {
@@ -75,17 +76,42 @@ export function planningSearchVariants(address: string): PlanningSearchVariant[]
   ]
 }
 
-export async function fetchPlanningSearchHtml(url: string): Promise<string> {
+export interface FetchPlanningOptions {
+  /** Defaults to the honest, self-identifying bot UA. Override once
+   *  planning-probe.ts has confirmed a browser UA is actually needed. */
+  userAgent?: string
+  /** A session cookie to replay, if planning-probe.ts confirms Idox's
+   *  address search needs one (unlike the weekly list's stateless GET). */
+  cookie?: string
+}
+
+/**
+ * A corporate/office proxy is applied automatically whenever HTTPS_PROXY
+ * (or the lowercase variant) is set — Node's fetch does not do this on its
+ * own (see netEnv.ts). This is the high-confidence half of "why does this
+ * open in a browser but not here"; User-Agent and session-cookie needs are
+ * the other, genuinely uncertain half — see planning-probe.ts, which tests
+ * both and reports which combination actually works before either becomes
+ * this function's default.
+ */
+export async function fetchPlanningSearchHtml(url: string, opts: FetchPlanningOptions = {}): Promise<string> {
+  const dispatcher = proxyDispatcher()
+  const headers: Record<string, string> = { 'User-Agent': opts.userAgent ?? BOT_USER_AGENT }
+  if (opts.cookie) headers['Cookie'] = opts.cookie
+
   let res: Response
   try {
     res = await fetch(url, {
-      headers: { 'User-Agent': 'opportunity-radar-spike/0.1 (planning-search, low-volume)' },
+      headers,
       redirect: 'follow',
-    })
+      ...(dispatcher ? { dispatcher } : {}),
+    } as RequestInit)
   } catch (cause) {
     throw new Error(
-      'Southwark planning search request failed. This environment blocks egress to ' +
-        `planning.southwark.gov.uk — run where reachable. Cause: ${(cause as Error).message}`,
+      'Southwark planning search request failed. If this address opens fine in a browser, the ' +
+        'likely cause is NOT that the site is unreachable — check: (1) a corporate proxy the browser ' +
+        `uses silently (set HTTPS_PROXY${detectProxyUrl() ? ` — one IS detected: ${detectProxyUrl()}, but the connection still failed` : ' — none is currently set'}); ` +
+        `(2) User-Agent/session requirements — run puller/planning-probe.ts, which tests both. Cause: ${(cause as Error).message}`,
     )
   }
   if (!res.ok) throw new Error(`Southwark planning search ${res.status}`)
@@ -201,7 +227,7 @@ export interface PlanningCheckResult {
  * so absence-because-we-couldn't-check is never confused with absence-
  * because-we-confirmed-there's-nothing.
  */
-export async function checkPlanningForAddress(address: string): Promise<PlanningCheckResult> {
+export async function checkPlanningForAddress(address: string, opts: FetchPlanningOptions = {}): Promise<PlanningCheckResult> {
   const errors: string[] = []
   const variantsUsed: string[] = []
   const seen = new Set<string>()
@@ -209,7 +235,7 @@ export async function checkPlanningForAddress(address: string): Promise<Planning
 
   for (const variant of planningSearchVariants(address)) {
     try {
-      const html = await fetchPlanningSearchHtml(variant.url)
+      const html = await fetchPlanningSearchHtml(variant.url, opts)
       if (!looksLikeIdoxResultsPage(html)) {
         errors.push(`${variant.name}: page did not look like a real results page (session/login/error page?)`)
         continue

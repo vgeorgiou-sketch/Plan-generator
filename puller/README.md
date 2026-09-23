@@ -61,6 +61,7 @@ and run where egress exists.
 | `idox.ts` | Shared Idox Public Access result-list parser (`<li class="searchresult">`) — used by both `southwarkDemolition.ts` and `planning.ts` | `planning.test.ts` ✓ |
 | `planning.ts` | The discriminator: `planningApplication` signal source (Idox, full-history). Application-type classification, address matching, never fabricates a date, unions results across every search variant | `planning.test.ts` ✓ |
 | `planningDataGovUk.ts` | Probe-only client for `planning.data.gov.uk` — unconfirmed whether it covers application-level data | — (probe) |
+| `netEnv.ts` | Corporate-proxy detection (`HTTPS_PROXY`/`HTTP_PROXY`) via an `undici` `ProxyAgent`, applied per-request. Needs `undici` (added as a real dependency) | `netEnv.test.ts` ✓ |
 
 ```bash
 node --experimental-strip-types puller/leadTime.test.ts
@@ -118,6 +119,30 @@ this, ALL egress-blocked** (`planning.data.gov.uk`, bare `www.gov.uk`, and
 3. Third-party mirrors (Plota, PlanWatch) — spot-check only, deliberately
    not built against (their windows are 90 days; someone else's scrape
    isn't a production dependency).
+
+**"It opens in my browser but Node can't reach it" — not a firewall, a
+missing proxy config, most likely.** A browser auto-detects an office HTTP
+proxy (WPAD/PAC/OS settings); Node's `fetch` does not — a real, well-known
+gap, not a bug here. `netEnv.ts` detects `HTTPS_PROXY`/`HTTP_PROXY` (and
+lowercase) and wires an explicit `undici` `ProxyAgent` per request
+(deliberately not global — it shouldn't silently reroute the Companies
+House/EPC clients too). This is applied **automatically** in
+`fetchPlanningSearchHtml` whenever the env var is set; no flag needed.
+
+The other candidate cause — Idox rejecting non-browser requests — is
+**not** assumed either way. `planning-probe.ts` is a diagnostic **funnel**:
+(1) connectivity, direct vs. proxy; (2) User-Agent sensitivity (bot vs. a
+realistic browser string), only if (1) found a working connection; (3)
+session-cookie need (a warm-up request, capturing `Set-Cookie`, replayed on
+the actual search), only if (2) resolved. Finishes by running both known
+addresses with whatever combination worked and checking for the exact
+confirmed reference. Every step reports real evidence (status, body
+snippet) — nothing here guesses which cause it is; the probe's output
+determines it. Once you've run it, paste the output back and I'll wire the
+winning combination into `checkPlanningForAddress` as the real default —
+right now it still defaults to the honest bot UA and no forced cookie,
+since baking in an unconfirmed guess would repeat the exact mistake this
+whole file exists to avoid.
 
 **CRITICAL — full history, never a rolling window.** A manual check nearly
 reached a wrong verdict on a default 90-day view; the real Southwark Bridge
