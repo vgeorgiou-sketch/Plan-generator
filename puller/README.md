@@ -120,51 +120,101 @@ this, ALL egress-blocked** (`planning.data.gov.uk`, bare `www.gov.uk`, and
    not built against (their windows are 90 days; someone else's scrape
    isn't a production dependency).
 
-**"It opens in my browser but Node can't reach it" — root-caused via a live
-curl diagnosis, not guessed.** Two candidate causes were checked. (1) An
-office HTTP proxy a browser auto-detects (WPAD/PAC/OS settings) but Node's
-`fetch` doesn't — `netEnv.ts` detects `HTTPS_PROXY`/`HTTP_PROXY` (and
-lowercase) and wires an explicit `undici` `ProxyAgent` per request
-(deliberately not global — it shouldn't silently reroute the Companies
-House/EPC clients too), applied automatically whenever the env var is set.
-This turned out NOT to be the cause here (`curl -v` succeeded directly,
-same as the browser), but the detection stays — a real fix for a different
-office network. (2) The actual cause, confirmed by `curl -v` on the user's
-machine: a **TLS-negotiation incompatibility**. curl (Windows' Schannel
-backend) recovers silently from a `failed to decrypt data, need more data`
-handshake hiccup; Node/undici's OpenSSL-based stack does not, and the
-`fetch` fails at the connection level before any HTTP response exists. The
-server sits behind a Citrix NetScaler (`X-Via-NSCOPI` header, an `NSC_`
-cookie) — a documented source of exactly this interop failure against
-strict, modern TLS clients.
+**"It opens in my browser but Node can't reach it" — root-caused via TWO
+rounds of live testing on the user's own machine, not guessed.** Candidate
+causes checked, in order: (1) An office HTTP proxy a browser auto-detects
+(WPAD/PAC/OS settings) but Node's `fetch` doesn't — `netEnv.ts` detects
+`HTTPS_PROXY`/`HTTP_PROXY` (and lowercase) and wires an explicit `undici`
+`ProxyAgent` per request (deliberately not global — it shouldn't silently
+reroute the Companies House/EPC clients too), applied automatically
+whenever the env var is set. Not the cause here (`curl -v` succeeded
+directly), but the detection stays — a real fix for a different office
+network. (2) A first look at `curl -v`'s output suggested a
+**TLS-negotiation incompatibility**: a Citrix NetScaler in front of the
+origin (`X-Via-NSCOPI` header, an `NSC_` cookie), and curl's Windows
+Schannel backend recovering silently from a `failed to decrypt data, need
+more data` handshake hiccup that Node/undici's OpenSSL stack does not. (3)
+**Revised after testing all six TLS protocol/cipher variants live**: every
+one failed, including the certificate-bypass variant, which should sidestep
+a pure protocol/cipher problem by skipping verification entirely — that's
+real evidence against theory (2), not just a stricter test. The
+better-fitting explanation: a **corporate TLS-inspection proxy** re-signs
+HTTPS with an internal root CA. Windows/curl (Schannel, backed by the
+Windows certificate store) trusts that root because IT installs it there;
+Node bundles its own OpenSSL-based CA store and does not, so the handshake
+fails certificate verification for every inspected host — consistent with
+`planning.data.gov.uk` working (likely on the inspection bypass list) while
+`planning.southwark.gov.uk` doesn't. (Caveat, not swept under the rug: if
+the fixes below also come back negative, the cert-bypass failure is odd
+enough to warrant checking whether the proxy blocks by TLS
+fingerprint/SNI rather than by certificate validation alone.)
 
-`resolveWorkingTlsAgent()` (`netEnv.ts`) tries a ranked list of **safe**
-`undici` `Agent` `connect` overrides — force TLS 1.2, disable session
-tickets, relax the OpenSSL security level, force ALPN to HTTP/1.1 — against
-the real host and adopts whichever one actually completes a handshake,
-caching the result per host so it only probes once. A **sixth**,
-certificate-bypass variant (`rejectUnauthorized: false`) exists purely as a
-diagnostic — proving the failure is a cert problem rather than a
-protocol/cipher one — and is categorically excluded from ever being
-auto-adopted (`netEnv.test.ts` proves it's never even attempted by the
-resolver). `checkPlanningForAddress` also now acquires the Idox session
+Three fixes, in the order `netEnv.ts`/`planning-probe.ts` try or offer them:
+
+1. **`PLANNING_CA_CERT_PATH`** — point it at the exported corporate root
+   cert (PEM). `readCorporateCaVariant()` (`netEnv.ts`) reads it and builds
+   an `undici` `Agent` trusting Node's normal root store *plus* that cert;
+   `resolveWorkingTlsAgent()` tries this **first**, before the
+   protocol/cipher fallbacks. In-process, per-request, no relaunch — this
+   is the one that's actually "wired in": once the env var is set,
+   `checkPlanningForAddress` (and therefore `sweep.ts`/`planningCheck.ts`)
+   picks it up automatically. `NODE_EXTRA_CA_CERTS` (Node's own convention)
+   works too as a fallback if that's already set for another reason.
+2. **`--use-system-ca`** (Node 22.9+) — trusts the *whole* Windows cert
+   store, same as curl, with no exported file needed:
+   `node --use-system-ca --experimental-strip-types puller/planning-probe.ts`
+   (or `NODE_OPTIONS=--use-system-ca` set once). This is a boot-time flag —
+   it can't be applied to an already-running process, so
+   `planning-probe.ts` tests it by spawning a short-lived **child**
+   process with the flag and checking whether that one connects.
+3. **`NODE_EXTRA_CA_CERTS`** set before running node (env var read once at
+   boot) — same effect as option 1, but applies to every TLS connection
+   Node makes in that process, not just this codebase's requests.
+
+**Exporting the corporate root cert on Windows** (needed for options 1/3):
+   - Run `certmgr.msc` → **Trusted Root Certification Authorities** →
+     **Certificates**. Look for the internal/company root (often named
+     after the company, IT department, or an inspection product — Zscaler,
+     Netskope, Forcepoint, Blue Coat are common ones).
+   - Right-click it → **All Tasks** → **Export...** → choose **Base-64
+     encoded X.509 (.CER)** (this is PEM format — Node needs this, not the
+     binary DER default) → save as e.g. `corporate-root.pem`.
+   - Or via PowerShell: `certutil -encode corporate-root.cer corporate-root.pem`
+     if you already have the cert in binary DER form.
+   - Then: `set PLANNING_CA_CERT_PATH=C:\path\to\corporate-root.pem` (or
+     the POSIX-shell equivalent) before running any planning script.
+
+`resolveWorkingTlsAgent()` (`netEnv.ts`) tries, in order: the corporate-CA
+variant above (if configured), then a ranked list of **safe** `undici`
+`Agent` `connect` overrides — force TLS 1.2, disable session tickets,
+relax the OpenSSL security level, force ALPN to HTTP/1.1 — kept as a
+fallback for a differently-broken host even though they were ruled out for
+this one, caching the result per host so it only probes once. A
+**seventh**, certificate-bypass variant (`rejectUnauthorized: false`)
+exists purely as a diagnostic and is categorically excluded from ever
+being auto-adopted (`netEnv.test.ts` proves it's never even attempted by
+the resolver). `checkPlanningForAddress` also acquires the Idox session
 cookie automatically: a warm-up GET captures **every** `Set-Cookie` header
 via `getSetCookie()` (not the lossy, comma-joined `get('set-cookie')`, which
 would silently drop either the `JSESSIONID` or the NetScaler's own `NSC_`
 persistence cookie), and threads the joined pair into every subsequent
-search-variant request. None of this needs a flag — it's automatic in
-`fetchPlanningSearchHtml`/`checkPlanningForAddress`, so `sweep.ts` and
-`planningCheck.ts` benefit without any change on their end.
+search-variant request. None of this needs a flag beyond the env var above
+— it's automatic in `fetchPlanningSearchHtml`/`checkPlanningForAddress`, so
+`sweep.ts` and `planningCheck.ts` benefit without any change on their end.
 
-`planning-probe.ts` reports, per TLS variant, which one(s) actually
-complete a handshake against the real host — the direct evidence, not a
-guess — then runs User-Agent sensitivity and finally the real
-`checkPlanningForAddress` against both known addresses. This sandbox's own
-network policy blocks the host outright before any TLS negotiation begins,
-so a run here only proves the code doesn't crash and fails gracefully with
-a descriptive error — it cannot confirm which TLS variant fixes the real
-NetScaler handshake. That confirmation can only come from running
-`planning-probe.ts` on the actual office machine that reproduced this.
+`planning-probe.ts` reports, per TLS variant (corporate-CA fix included
+when configured), which one(s) actually complete a handshake against the
+real host — direct evidence, not a guess — then separately spawns a child
+process to test `--use-system-ca`, then runs User-Agent sensitivity and
+finally the real `checkPlanningForAddress` against both known addresses.
+This sandbox's own network policy blocks the host outright before any TLS
+negotiation begins (and its custom `undici` `Agent`s bypass the sandbox's
+own local proxy routing that the untouched default happens to use), so a
+run here only proves the code doesn't crash and fails gracefully with a
+descriptive error at every step — it cannot confirm which fix works
+against the real corporate proxy. That confirmation can only come from
+running `planning-probe.ts` on the actual office machine that reproduced
+this, ideally with `PLANNING_CA_CERT_PATH` set to a freshly-exported cert.
 
 **CRITICAL — full history, never a rolling window.** A manual check nearly
 reached a wrong verdict on a default 90-day view; the real Southwark Bridge

@@ -1,41 +1,65 @@
 /*
   Planning source probe.
 
-  Root-caused via a live curl diagnosis against the real site (not guessed):
-  the network and machine are fine — curl succeeds, gets a 200 and a
-  JSESSIONID cookie. Node's fetch fails with a connection-level error
-  because of a TLS-negotiation incompatibility between Node/undici's
-  OpenSSL-based stack and a Citrix NetScaler in front of the origin
-  (X-Via-NSCOPI header, NSC_ cookie) — curl's Windows Schannel backend
-  silently recovers from the same handshake hiccup ("failed to decrypt
-  data, need more data"); OpenSSL does not. See netEnv.ts's file header.
+  Root-caused via TWO rounds of live testing on the user's actual office
+  machine (never guessed from here):
+    Round 1 (curl): the network and machine are fine — curl succeeds, gets
+      a 200 and a JSESSIONID cookie. Node's fetch fails at the connection
+      level. Curl's Windows Schannel backend showed "failed to decrypt
+      data, need more data" but recovered; this first looked like a
+      NetScaler TLS-1.3 interop bug (X-Via-NSCOPI header, NSC_ cookie).
+    Round 2 (all six TLS_VARIANTS tested, including cert-bypass): ALL SIX
+      failed on the real machine, which rules out a pure protocol/cipher
+      fix — rejectUnauthorized:false should sidestep a protocol mismatch,
+      so something else is going on. Revised diagnosis: a corporate
+      TLS-inspection proxy re-signs HTTPS with an internal root CA that
+      Windows/curl (Schannel, backed by the OS cert store) trusts but
+      Node's bundled OpenSSL CA store does not — also explaining why
+      planning.data.gov.uk (likely on the inspection bypass list) worked
+      while planning.southwark.gov.uk didn't. See netEnv.ts's file header
+      for the full reasoning, including the honest caveat about what the
+      cert-bypass failure doesn't fully explain.
 
   This probe:
-    1. Checks planning.data.gov.uk (unrelated to the TLS issue below).
+    1. Checks planning.data.gov.uk (background signal only, not the fix).
     2. Reports proxy detection (kept — a real fix for a DIFFERENT office,
        even though it wasn't this one's actual cause).
-    3. Runs every TLS_VARIANT (including the insecure, certificate-bypass
-       one — diagnostic ONLY, clearly marked, never auto-adopted) against
-       the bare host and reports which one(s) actually complete a
-       handshake — this is the direct answer to "which TLS config
-       connects", not a guess.
-    4. User-Agent sensitivity, using whichever dispatcher won step 3.
-    5. Runs the REAL checkPlanningForAddress (which now auto-resolves
-       proxy/TLS and acquires + threads the session cookie — see
-       planning.ts) against both known addresses and checks for the exact
-       manually-confirmed reference.
+    3. Runs every TLS variant (via allTlsVariants() — the corporate-CA-cert
+       fix FIRST if PLANNING_CA_CERT_PATH/NODE_EXTRA_CA_CERTS is set, then
+       the protocol/cipher fallbacks, including the insecure,
+       certificate-bypass one — diagnostic ONLY, clearly marked, never
+       auto-adopted) against the bare host and reports which one(s)
+       actually complete a handshake — direct evidence, not a guess.
+    4. Tests --use-system-ca (Node 22.9+) in a CHILD process, since that's
+       a boot-time flag this already-running process can't apply to
+       itself — the direct answer to "does trusting the whole Windows
+       cert store fix it" without requiring an exported cert file first.
+    5. User-Agent sensitivity, using whichever dispatcher won step 3.
+    6. Runs the REAL checkPlanningForAddress (which now auto-resolves
+       proxy/TLS — corporate-CA-cert fix included — and acquires + threads
+       the session cookie — see planning.ts) against both known addresses
+       and checks for the exact manually-confirmed reference.
 
   Run: node --experimental-strip-types puller/planning-probe.ts
+  For step 3's corporate-CA fix to be tested, export the corporate root
+  cert (see puller/README.md) and set PLANNING_CA_CERT_PATH first.
   Needs no API key. Nothing here is parsed blindly or trusted silently.
 */
 
 import { candidateEntityUrls } from './planningDataGovUk.ts'
 import { checkPlanningForAddress } from './planning.ts'
-import { detectProxyUrl, TLS_VARIANTS, BOT_USER_AGENT, BROWSER_USER_AGENT } from './netEnv.ts'
+import { allTlsVariants, detectProxyUrl, BOT_USER_AGENT, BROWSER_USER_AGENT } from './netEnv.ts'
 import { BODY_SNIPPET_LEN, snippet } from './jsonResponse.ts'
 import { IDOX_BASE } from './idox.ts'
 import { fileURLToPath } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { writeFileSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Agent } from 'undici'
+
+const execFileAsync = promisify(execFile)
 
 const ADDRESSES = ['38-48 Southwark Bridge Road', '68 Borough Road']
 const KNOWN_REFS: Record<string, string> = { '38-48 Southwark Bridge Road': '26/00849/OBS', '68 Borough Road': '23/AP/3411' }
@@ -70,13 +94,19 @@ interface TlsProbeResult {
   error?: string
 }
 
-/** Test EVERY variant (including the insecure one) independently — this
- *  duplicates resolveWorkingTlsAgent's list deliberately, so the probe can
- *  report ALL outcomes for transparency, not just the first winner. */
+/** Test EVERY variant (including the insecure one, and the corporate-CA
+ *  fix if configured) independently — this duplicates resolveWorkingTlsAgent's
+ *  list deliberately, so the probe can report ALL outcomes for
+ *  transparency, not just the first winner. */
 async function probeTlsVariants(): Promise<TlsProbeResult[]> {
+  const variants = allTlsVariants()
   console.log(`\n${'═'.repeat(70)}\nTLS variants against ${PROBE_TARGET}\n`)
+  if (!variants.some((v) => v.name.startsWith('corporate root CA'))) {
+    console.log('  (no PLANNING_CA_CERT_PATH/NODE_EXTRA_CA_CERTS set — the corporate-CA fix is not being tested here;')
+    console.log('   see puller/README.md for how to export the corporate root cert, then set PLANNING_CA_CERT_PATH.)\n')
+  }
   const results: TlsProbeResult[] = []
-  for (const variant of TLS_VARIANTS) {
+  for (const variant of variants) {
     const label = variant.insecure ? `${variant.name}` : variant.name
     const agent = variant.connect ? new Agent({ connect: variant.connect }) : undefined
     try {
@@ -94,6 +124,56 @@ async function probeTlsVariants(): Promise<TlsProbeResult[]> {
     }
   }
   return results
+}
+
+const USE_SYSTEM_CA_FLAG = '--use-system-ca'
+
+/**
+ * --use-system-ca is a boot-time Node flag (makes Node trust the OS cert
+ * store, same as curl's Schannel backend on Windows) — this process is
+ * already running without it, so the only honest way to test it is to
+ * spawn a fresh child process WITH it and see if that one connects where
+ * this process's default (and every TLS_VARIANT) failed.
+ */
+async function probeUseSystemCaFlag(target: string): Promise<void> {
+  console.log(`\n${'═'.repeat(70)}\n--use-system-ca (Node 22.9+) — tested in a child process, a boot-time flag\n`)
+
+  if (!process.allowedNodeEnvironmentFlags.has(USE_SYSTEM_CA_FLAG)) {
+    console.log(`  ✗ this Node version (${process.version}) does not recognise ${USE_SYSTEM_CA_FLAG} — need 22.9+. Skipped.`)
+    return
+  }
+
+  const scriptPath = join(tmpdir(), `planning-probe-use-system-ca-${process.pid}.mjs`)
+  writeFileSync(
+    scriptPath,
+    [
+      'const target = process.argv[2]',
+      'try {',
+      "  const res = await fetch(target, { method: 'HEAD' })",
+      "  process.stdout.write('CONNECTED:' + res.status)",
+      '} catch (err) {',
+      "  process.stdout.write('FAILED:' + err.message)",
+      '}',
+    ].join('\n'),
+  )
+  try {
+    const { stdout } = await execFileAsync('node', [USE_SYSTEM_CA_FLAG, scriptPath, target], { timeout: 15_000 })
+    if (stdout.startsWith('CONNECTED:')) {
+      console.log(`  ✓ CONNECTED — HTTP ${stdout.slice('CONNECTED:'.length)}`)
+      console.log(`  → CONFIRMED: running with ${USE_SYSTEM_CA_FLAG} fixes this. Simplest option if you don't want to`)
+      console.log('    export a cert file — but it trusts the WHOLE Windows store, not just this one root, and only')
+      console.log('    applies while you remember to pass the flag (or set NODE_OPTIONS=--use-system-ca).')
+    } else {
+      console.log(`  ✗ failed — ${stdout || '(no output)'}`)
+      console.log('  → --use-system-ca alone did not fix it here. Note this child process did NOT go through this')
+      console.log('    codebase\'s proxy handling — if a proxy is also required on this network, that alone could')
+      console.log('    explain this failure independent of the CA-trust question.')
+    }
+  } catch (err) {
+    console.log(`  ✗ child process failed: ${(err as Error).message}`)
+  } finally {
+    unlinkSync(scriptPath)
+  }
 }
 
 async function probeUserAgent(dispatcher: Agent | undefined): Promise<void> {
@@ -144,17 +224,23 @@ async function main() {
   const winner = tlsResults.find((r) => r.connected && !r.name.startsWith('[DIAGNOSTIC'))
   const insecureOnly = !winner && tlsResults.find((r) => r.connected)
 
-  if (winner) {
+  if (winner?.name.startsWith('corporate root CA')) {
+    console.log(`\n→ CONFIRMED: the corporate-CA-cert fix connects. Keep PLANNING_CA_CERT_PATH (or NODE_EXTRA_CA_CERTS)`)
+    console.log('  set whenever you run this — resolveWorkingTlsAgent() then finds and uses it automatically.')
+  } else if (winner) {
     console.log(`\n→ CONFIRMED: "${winner.name}" connects. resolveWorkingTlsAgent() will find and use this automatically — no config needed.`)
   } else if (insecureOnly) {
-    console.log('\n→ Only the certificate-bypass variant connected. This means the failure is a CERTIFICATE problem,')
-    console.log('  not a protocol/cipher one — do NOT ship rejectUnauthorized:false. Paste this output back so the')
-    console.log('  real fix (adding the correct CA, or checking for an intercepting corporate root cert) can be found.')
+    console.log('\n→ Only the certificate-bypass variant connected, and no corporate-CA-cert was configured to test.')
+    console.log('  This points strongly at a certificate-trust problem (an inspection proxy re-signing with an')
+    console.log('  internal CA) rather than a protocol/cipher one — do NOT ship rejectUnauthorized:false. Export the')
+    console.log('  corporate root cert (see puller/README.md), set PLANNING_CA_CERT_PATH, and re-run this probe.')
   } else {
-    console.log('\n→ Nothing connected, including the diagnostic-only variant. This is not the TLS issue previously')
-    console.log('  diagnosed for this host — paste this full output back for a fresh diagnosis.')
+    console.log('\n→ Nothing connected, not even the diagnostic-only certificate-bypass variant. That rules out a')
+    console.log('  simple cert-trust problem too — check whether --use-system-ca (below) fixes it, since that trusts')
+    console.log('  the OS store directly rather than an explicitly-appended cert.')
   }
 
+  await probeUseSystemCaFlag(PROBE_TARGET)
   await probeUserAgent(winner?.agent)
 
   console.log(`\n${'═'.repeat(70)}\nRunning the real check (auto TLS/proxy/session) against both known cases:`)
@@ -165,6 +251,9 @@ async function main() {
   console.log('Southwark Bridge Road, 23/AP/3411 for 68 Borough Road. If they now pass,')
   console.log('planning.ts is confirmed working end to end — sweep.ts and planningCheck.ts')
   console.log('use the exact same checkPlanningForAddress path, so they benefit too.')
+  console.log('\nIf nothing above passes: the corporate-CA-cert fix (PLANNING_CA_CERT_PATH) and --use-system-ca')
+  console.log('are the two live candidates for a TLS-inspection-proxy cause — see puller/README.md for how to')
+  console.log('export the corporate root cert on Windows if you have not tried that yet.')
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

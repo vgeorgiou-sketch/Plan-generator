@@ -1,6 +1,6 @@
 /*
   Network-environment awareness for Node fetch: corporate proxies AND
-  TLS-handshake quirks that a browser papers over silently but Node's
+  TLS-trust quirks that a browser papers over silently but Node's
   OpenSSL-based fetch does not.
 
   PROXY: a browser auto-detects an office/corporate HTTP proxy (via WPAD, a
@@ -12,23 +12,51 @@
   would silently route every other fetch in this codebase (Companies
   House, EPC) through the same proxy whether or not it's needed there too.
 
-  TLS: confirmed via a live curl diagnosis against Southwark's actual
-  planning site — the network and proxy are NOT the issue for this host;
-  curl (using Windows' Schannel TLS backend) succeeds after recovering from
-  a "failed to decrypt data, need more data" handshake hiccup, which is a
-  documented interop pattern between certain TLS clients and a Citrix
-  NetScaler in front of the origin (identified via the `X-Via-NSCOPI`
-  header and an `NSC_` cookie). Node/undici uses OpenSSL, not Schannel, and
-  does not have the same silent-recovery behaviour, so the handshake simply
-  fails there. resolveWorkingTlsAgent() tries a ranked list of SAFE TLS
-  adjustments (version, cipher/security-level, session tickets, ALPN) and
-  auto-adopts whichever one actually completes a handshake — caching the
-  result per host so this only probes once. The certificate-bypass variant
-  is diagnostic-only and is NEVER auto-adopted (see its own comment below).
+  TLS — REVISED DIAGNOSIS, from a second round of live curl testing: the
+  first theory (a NetScaler TLS-1.3 handshake bug) does NOT hold — ALL SIX
+  TLS_VARIANTS below failed on the user's machine, including the
+  certificate-bypass one, which should sidestep a pure TLS-protocol/cipher
+  incompatibility. What's still true: curl succeeds directly on the same
+  machine. The revised, better-fitting explanation: a corporate
+  TLS-inspection proxy re-signs HTTPS traffic with an internal root CA.
+  Windows/curl (Schannel, backed by the Windows certificate store) trusts
+  that root because IT admins install it there; Node bundles its own
+  OpenSSL-based CA store and does NOT trust it, so every connection to an
+  inspected host fails certificate verification — which also explains why
+  planning.data.gov.uk (likely on the inspection bypass list) works fine
+  while planning.southwark.gov.uk doesn't. (Caveat, not swept under the
+  rug: rejectUnauthorized:false failing too is a LITTLE surprising if this
+  is purely a cert-trust problem, since disabling verification should let
+  any CA through — worth keeping in mind if the fixes below also come back
+  negative; that would point at something the inspection proxy does beyond
+  certificate validation, e.g. resetting connections by TLS fingerprint.)
+
+  The real fix is trusting the corporate root, not a protocol/cipher
+  adjustment. Three ways, weakest-coupling first:
+    1. Point PLANNING_CA_CERT_PATH (or the Node-standard NODE_EXTRA_CA_CERTS)
+       at the exported corporate root cert (PEM). readCorporateCaVariant()
+       picks this up automatically, in-process, per request — no relaunch,
+       no global trust-store change, only this host's dispatcher is
+       affected. This is what resolveWorkingTlsAgent() tries FIRST.
+    2. Run node with --use-system-ca (Node 22.9+) so Node trusts the whole
+       Windows cert store, same as curl. This is a boot-time flag, so it
+       can't be applied from inside an already-running process — see
+       planning-probe.ts's probeUseSystemCaFlag(), which spawns a child
+       process to test it.
+    3. Set NODE_EXTRA_CA_CERTS before starting node (a Node-native env var,
+       read once at boot) — equivalent in effect to option 1 but applies to
+       every TLS connection Node makes, not just this codebase's.
+  See puller/README.md for how to export the corporate root cert on
+  Windows. TLS_VARIANTS (protocol/cipher/session adjustments) are kept as a
+  secondary fallback — ruled out for THIS failure, but a real fix for a
+  differently-broken host — and the certificate-bypass variant among them
+  remains diagnostic-only and is NEVER auto-adopted (see its own comment).
 */
 
 import { Agent, ProxyAgent } from 'undici'
 import { constants as tlsConstants } from 'node:crypto'
+import { rootCertificates } from 'node:tls'
+import { readFileSync } from 'node:fs'
 
 export function detectProxyUrl(): string | undefined {
   return process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || undefined
@@ -86,6 +114,41 @@ export const TLS_VARIANTS: TlsVariant[] = [
   },
 ]
 
+/** Env var this codebase reads first for an exported corporate root CA
+ *  (PEM). Falls back to Node's own NODE_EXTRA_CA_CERTS convention so a var
+ *  already set for that purpose is picked up without duplicating it. */
+export const CORPORATE_CA_CERT_PATH_ENV = 'PLANNING_CA_CERT_PATH'
+
+/**
+ * If a corporate root CA cert is configured (via PLANNING_CA_CERT_PATH or
+ * NODE_EXTRA_CA_CERTS), build a TlsVariant that trusts Node's normal root
+ * store PLUS that cert — the direct fix for a TLS-inspection proxy whose
+ * re-signed certs Windows/curl trust (via the OS store) but Node's bundled
+ * OpenSSL store does not. Returns undefined (skip, don't attempt) if no
+ * path is configured or the file can't be read — this must never be the
+ * variant that silently "succeeds" by doing nothing.
+ */
+export function readCorporateCaVariant(): TlsVariant | undefined {
+  const path = process.env[CORPORATE_CA_CERT_PATH_ENV] || process.env.NODE_EXTRA_CA_CERTS
+  if (!path) return undefined
+  let pem: string
+  try {
+    pem = readFileSync(path, 'utf8')
+  } catch (err) {
+    console.error(`${CORPORATE_CA_CERT_PATH_ENV}/NODE_EXTRA_CA_CERTS set to "${path}" but could not be read: ${(err as Error).message}`)
+    return undefined
+  }
+  return { name: `corporate root CA appended, from ${path}`, connect: { ca: [...rootCertificates, pem] } }
+}
+
+/** All TLS variants worth trying, in priority order: the corporate-CA fix
+ *  first (if configured — it's the confirmed-likely cause), then the
+ *  protocol/cipher fallbacks, ending with the diagnostic-only insecure one. */
+export function allTlsVariants(): TlsVariant[] {
+  const corporate = readCorporateCaVariant()
+  return corporate ? [corporate, ...TLS_VARIANTS] : TLS_VARIANTS
+}
+
 let resolvedTls: { host: string; agent: Agent | undefined } | undefined
 
 /**
@@ -99,7 +162,7 @@ export async function resolveWorkingTlsAgent(probeUrl: string): Promise<Agent | 
   const host = new URL(probeUrl).host
   if (resolvedTls?.host === host) return resolvedTls.agent
 
-  for (const variant of TLS_VARIANTS) {
+  for (const variant of allTlsVariants()) {
     if (variant.insecure) continue // never tried here — see planning-probe.ts for the diagnostic-only check
     const agent = variant.connect ? new Agent({ connect: variant.connect }) : undefined
     try {
