@@ -2,7 +2,7 @@ import { useState } from 'react'
 import './signalgrid.css'
 import { convergenceOf, deriveGridCells } from '../../signal-model/convergence.ts'
 import { SBR_PRESS_BASELINE, SOUTHWARK_BRIDGE_ROAD_SEED } from '../../signal-model/seed.ts'
-import { LAYER_CATEGORY, LAYER_LABEL, SIGNAL_LAYERS } from '../../signal-model/types.ts'
+import { LAYER_CATEGORY, LAYER_LABEL, SIGNAL_LAYERS, type LayerCategory } from '../../signal-model/types.ts'
 import type { Opportunity, Signal } from '../../signal-model/types.ts'
 
 /*
@@ -10,16 +10,30 @@ import type { Opportunity, Signal } from '../../signal-model/types.ts'
   There is no additive score and no mock data. Every non-empty cell traces to
   a source record; empty cells (layers not yet pulled) stay genuinely empty.
 
-  Visual language: a dense operations-console read, not a scorecard — dark
-  field, glowing category colour by layer, monospace for anything that's a
-  measured number (dates, counts, confidence). The header strip's own stats
-  are computed from the same arrays the grid renders, never a separate
-  fabricated number.
+  Structure, not just palette: a dashboard reads as a console because several
+  DIFFERENT widgets sit side by side (a gauge, a mix chart, a timeline, a
+  matrix, a log) — not because one table got a dark background. Every widget
+  here is derived from the exact same signal-model arrays the old single
+  table rendered; nothing new is fabricated to fill a panel.
 */
 
 const BUILDINGS: Opportunity[] = [SOUTHWARK_BRIDGE_ROAD_SEED]
 
 const FACT_MARK: Record<string, string> = { filed: '●', derived: '◐', inferred: '○', empty: '' }
+
+const CATEGORY_ORDER: LayerCategory[] = ['kinetic', 'pressure', 'context']
+
+/** How many distinct layers COULD exist per category — the denominator for
+ *  the gauge and the mix chart, computed once from the canonical layer list
+ *  (never a guessed "out of 10"). */
+const LAYER_TOTAL_BY_CATEGORY: Record<LayerCategory, number> = SIGNAL_LAYERS.reduce(
+  (acc, layer) => {
+    const cat = LAYER_CATEGORY[layer]
+    acc[cat] = (acc[cat] ?? 0) + 1
+    return acc
+  },
+  { kinetic: 0, pressure: 0, context: 0 } as Record<LayerCategory, number>,
+)
 
 function shortDate(iso: string): string {
   const [y, m, d] = iso.split('-')
@@ -56,6 +70,115 @@ function HeaderStats({ buildings }: { buildings: Opportunity[] }) {
   )
 }
 
+/** Two concentric arcs: how many of the possible KINETIC and PRESSURE layers
+ *  actually fired for this building — the two categories convergence is
+ *  computed from. Real fractions (n of a fixed, known denominator), not a
+ *  synthetic "score out of 100". */
+function ConvergenceGauge({ opp }: { opp: Opportunity }) {
+  const c = convergenceOf(opp, SBR_PRESS_BASELINE)
+  const kFrac = LAYER_TOTAL_BY_CATEGORY.kinetic ? c.kineticLayers / LAYER_TOTAL_BY_CATEGORY.kinetic : 0
+  const pFrac = LAYER_TOTAL_BY_CATEGORY.pressure ? c.pressureLayers / LAYER_TOTAL_BY_CATEGORY.pressure : 0
+
+  const R_OUT = 54
+  const R_IN = 40
+  const circOut = 2 * Math.PI * R_OUT
+  const circIn = 2 * Math.PI * R_IN
+
+  return (
+    <div className="sg-gauge">
+      <svg viewBox="0 0 128 128" width="128" height="128">
+        <circle cx="64" cy="64" r={R_OUT} className="sg-gauge-track" />
+        <circle cx="64" cy="64" r={R_IN} className="sg-gauge-track" />
+        <circle
+          cx="64"
+          cy="64"
+          r={R_OUT}
+          className="sg-gauge-arc kinetic"
+          strokeDasharray={`${kFrac * circOut} ${circOut}`}
+          transform="rotate(-90 64 64)"
+        />
+        <circle
+          cx="64"
+          cy="64"
+          r={R_IN}
+          className="sg-gauge-arc pressure"
+          strokeDasharray={`${pFrac * circIn} ${circIn}`}
+          transform="rotate(-90 64 64)"
+        />
+        <text x="64" y="60" textAnchor="middle" className="sg-gauge-verdict">
+          {c.isConverged ? 'YES' : 'NOT YET'}
+        </text>
+        <text x="64" y="76" textAnchor="middle" className="sg-gauge-sub">
+          CONVERGED
+        </text>
+      </svg>
+      <dl className="sg-gauge-legend">
+        <div>
+          <dt><span className="sg-cdot" style={{ background: 'var(--kinetic)' }} />Kinetic</dt>
+          <dd>{c.kineticLayers} / {LAYER_TOTAL_BY_CATEGORY.kinetic} layers</dd>
+        </div>
+        <div>
+          <dt><span className="sg-cdot" style={{ background: 'var(--pressure)' }} />Pressure</dt>
+          <dd>{c.pressureLayers} / {LAYER_TOTAL_BY_CATEGORY.pressure} layers</dd>
+        </div>
+      </dl>
+    </div>
+  )
+}
+
+/** How many CITED SIGNALS (not layers) exist per category for this building
+ *  — a different real count from the gauge above, at the record level. */
+function CategoryMix({ opp }: { opp: Opportunity }) {
+  const counts: Record<LayerCategory, number> = { kinetic: 0, pressure: 0, context: 0 }
+  for (const s of opp.signals) counts[LAYER_CATEGORY[s.layer]]++
+  const max = Math.max(1, ...CATEGORY_ORDER.map((c) => counts[c]))
+
+  return (
+    <div className="sg-mix">
+      {CATEGORY_ORDER.map((cat) => (
+        <div key={cat} className="sg-mix-row">
+          <span className="sg-mix-label">{cat}</span>
+          <div className="sg-mix-track">
+            <div className={`sg-mix-fill cat-${cat}`} style={{ width: `${(counts[cat] / max) * 100}%` }} />
+          </div>
+          <span className="sg-mix-count">{counts[cat]}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Every cited signal placed on a real time axis (earliest → latest
+ *  observedAt), coloured by category — the actual chronology behind the
+ *  matrix's flattened cells, at a glance. */
+function EvidenceTimeline({ opp }: { opp: Opportunity }) {
+  const dated = [...opp.signals].sort((a, b) => a.observedAt.localeCompare(b.observedAt))
+  if (dated.length < 2) return null
+  const first = Date.parse(dated[0].observedAt)
+  const last = Date.parse(dated[dated.length - 1].observedAt)
+  const span = Math.max(1, last - first)
+
+  return (
+    <div className="sg-timeline">
+      <div className="sg-timeline-head">Evidence timeline · {shortDate(dated[0].observedAt)} → {shortDate(dated[dated.length - 1].observedAt)}</div>
+      <div className="sg-timeline-track">
+        <div className="sg-timeline-line" />
+        {dated.map((s) => {
+          const pct = ((Date.parse(s.observedAt) - first) / span) * 100
+          return (
+            <div
+              key={s.id}
+              className={`sg-timeline-dot cat-${LAYER_CATEGORY[s.layer]}`}
+              style={{ left: `${pct}%` }}
+              title={`${shortDate(s.observedAt)} · ${LAYER_LABEL[s.layer]} · ${s.label}`}
+            />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function Matrix({
   buildings,
   selectedId,
@@ -66,7 +189,7 @@ function Matrix({
   onSelect: (id: string) => void
 }) {
   // leading building column + 11 layer columns
-  const template = `minmax(150px, 1.4fr) repeat(${SIGNAL_LAYERS.length}, minmax(56px, 1fr))`
+  const template = `minmax(150px, 1.4fr) repeat(${SIGNAL_LAYERS.length}, minmax(52px, 1fr))`
   return (
     <div className="sg-matrixwrap">
       <div className="sg-matrix" style={{ gridTemplateColumns: template }}>
@@ -138,41 +261,22 @@ function MatrixRow({
   )
 }
 
-function BuildingCard({ opp }: { opp: Opportunity }) {
+function EvidenceLog({ opp }: { opp: Opportunity }) {
   const c = convergenceOf(opp, SBR_PRESS_BASELINE)
   const ordered = [...opp.signals].sort((a, b) => a.observedAt.localeCompare(b.observedAt))
   const hasPscSequence = opp.signals.filter((s) => s.layer === 'companiesHousePsc').length > 1
 
   return (
-    <section className="sg-card">
-      <div className="sg-card-head">
-        <div>
-          <h2>{opp.address}</h2>
-          <p className="addr">
-            {opp.postcode} · {opp.borough} · <span className="sg-status">{opp.status}</span>
-          </p>
-        </div>
-        <span className={`sg-convbadge ${c.isConverged ? 'on' : 'off'}`}>
-          {c.isConverged ? 'CONVERGED' : 'WATCHING'}
-        </span>
-      </div>
-
-      <div className="sg-conv">
-        <span className="sg-chip">Pressure {c.pressureLayers}</span>
-        <span className="sg-chip">Kinetic {c.kineticLayers}</span>
-        <span className="sg-chip">Weakest signal {c.minConfidence.toFixed(1)}</span>
+    <section className="sg-panel sg-log">
+      <div className="sg-panel-head">
+        <span className="sg-panel-title">Evidence log — every row links to its source record</span>
         {c.leadTimeDays !== undefined && (
           <span className="sg-chip lead">
             {c.leadTimeDays}d lead <em>incorporation → press</em>
           </span>
         )}
+        <span className="sg-chip">Weakest signal {c.minConfidence.toFixed(1)}</span>
       </div>
-      <p className="sg-honest">
-        Kinetic-only until EPC/VOA (pressure) is pulled against this building — shown honestly, not forced to
-        “converged”.
-      </p>
-
-      <h3>Evidence — every row links to its source record</h3>
       <ul className="sg-evlist">
         {ordered.map((s) => {
           const cat = LAYER_CATEGORY[s.layer]
@@ -203,6 +307,10 @@ function BuildingCard({ opp }: { opp: Opportunity }) {
           insight, not the fact of a PSC filing.
         </div>
       )}
+      <p className="sg-honest">
+        Kinetic-only until EPC/VOA (pressure) is pulled against this building — shown honestly, not forced to
+        “converged”.
+      </p>
     </section>
   )
 }
@@ -210,6 +318,7 @@ function BuildingCard({ opp }: { opp: Opportunity }) {
 export default function SignalGrid() {
   const [selectedId, setSelectedId] = useState(BUILDINGS[0].id)
   const selected = BUILDINGS.find((b) => b.id === selectedId) ?? BUILDINGS[0]
+  const selectedConvergence = convergenceOf(selected, SBR_PRESS_BASELINE)
 
   return (
     <div className="sg-root">
@@ -225,44 +334,72 @@ export default function SignalGrid() {
           <HeaderStats buildings={BUILDINGS} />
         </header>
 
-        <div className="sg-legend">
-          <span className="k">
-            <span className="sg-cdot" style={{ background: 'var(--kinetic)' }} />
-            Kinetic
-          </span>
-          <span className="k">
-            <span className="sg-cdot" style={{ background: 'var(--pressure)' }} />
-            Pressure
-          </span>
-          <span className="k">
-            <span className="sg-cdot" style={{ background: 'var(--context)' }} />
-            Context
-          </span>
-          <span className="sg-legend-sep" />
-          <span className="k">
-            <span className="sg-sw filed" />
-            Filed
-          </span>
-          <span className="k">
-            <span className="sg-sw derived" />
-            Derived
-          </span>
-          <span className="k">
-            <span className="sg-sw inferred" />
-            Inferred
-          </span>
-          <span className="k">
-            <span className="sg-sw empty" />
-            No record
-          </span>
+        <div className="sg-dashboard">
+          <aside className="sg-rail">
+            <section className="sg-panel sg-panel--tight">
+              <div className="sg-panel-head">
+                <span className="sg-panel-name">{selected.address}</span>
+                <span className={`sg-convbadge ${selectedConvergence.isConverged ? 'on' : 'off'}`}>
+                  {selectedConvergence.isConverged ? 'CONVERGED' : 'WATCHING'}
+                </span>
+              </div>
+              <p className="sg-addr-sub">
+                {selected.postcode} · {selected.borough} · <span className="sg-status">{selected.status}</span>
+              </p>
+              <ConvergenceGauge opp={selected} />
+            </section>
+
+            <section className="sg-panel sg-panel--tight">
+              <div className="sg-panel-head">
+                <span className="sg-panel-title">Signal mix — cited records by category</span>
+              </div>
+              <CategoryMix opp={selected} />
+            </section>
+
+            <div className="sg-legend sg-legend--rail">
+              <span className="k">
+                <span className="sg-cdot" style={{ background: 'var(--kinetic)' }} />
+                Kinetic
+              </span>
+              <span className="k">
+                <span className="sg-cdot" style={{ background: 'var(--pressure)' }} />
+                Pressure
+              </span>
+              <span className="k">
+                <span className="sg-cdot" style={{ background: 'var(--context)' }} />
+                Context
+              </span>
+              <span className="k">
+                <span className="sg-sw filed" />
+                Filed
+              </span>
+              <span className="k">
+                <span className="sg-sw derived" />
+                Derived
+              </span>
+              <span className="k">
+                <span className="sg-sw inferred" />
+                Inferred
+              </span>
+              <span className="k">
+                <span className="sg-sw empty" />
+                No record
+              </span>
+            </div>
+          </aside>
+
+          <main className="sg-main">
+            <section className="sg-panel">
+              <div className="sg-panel-head">
+                <span className="sg-panel-title">Signal matrix</span>
+              </div>
+              <Matrix buildings={BUILDINGS} selectedId={selectedId} onSelect={setSelectedId} />
+              <EvidenceTimeline opp={selected} />
+            </section>
+          </main>
         </div>
 
-        <section className="sg-panel">
-          <div className="sg-panel-head">Signal matrix</div>
-          <Matrix buildings={BUILDINGS} selectedId={selectedId} onSelect={setSelectedId} />
-        </section>
-
-        <BuildingCard opp={selected} />
+        <EvidenceLog opp={selected} />
 
         <div className="sg-foot">
           Grid and figures computed by signal-model (deriveGridCells / convergence); no mock data, no additive score.
