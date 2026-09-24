@@ -9,6 +9,12 @@ import type { Opportunity, Signal } from '../../signal-model/types.ts'
   The Signal grid — the provenance tile matrix over REAL, cited buildings.
   There is no additive score and no mock data. Every non-empty cell traces to
   a source record; empty cells (layers not yet pulled) stay genuinely empty.
+
+  Visual language: a dense operations-console read, not a scorecard — dark
+  field, glowing category colour by layer, monospace for anything that's a
+  measured number (dates, counts, confidence). The header strip's own stats
+  are computed from the same arrays the grid renders, never a separate
+  fabricated number.
 */
 
 const BUILDINGS: Opportunity[] = [SOUTHWARK_BRIDGE_ROAD_SEED]
@@ -22,6 +28,32 @@ function shortDate(iso: string): string {
 
 function signalById(opp: Opportunity, id?: string): Signal | undefined {
   return id ? opp.signals.find((s) => s.id === id) : undefined
+}
+
+function HeaderStats({ buildings }: { buildings: Opportunity[] }) {
+  const converged = buildings.filter((b) => convergenceOf(b, SBR_PRESS_BASELINE).isConverged).length
+  const signalsCited = buildings.reduce((n, b) => n + b.signals.length, 0)
+  const liveLayers = new Set(
+    buildings.flatMap((b) => deriveGridCells(b).filter((c) => c.state !== 'empty').map((c) => c.layer)),
+  ).size
+
+  const stats: { label: string; value: number | string }[] = [
+    { label: 'Buildings tracked', value: buildings.length },
+    { label: 'Converged', value: `${converged}/${buildings.length}` },
+    { label: 'Signals cited', value: signalsCited },
+    { label: 'Layers live', value: `${liveLayers}/${SIGNAL_LAYERS.length}` },
+  ]
+
+  return (
+    <div className="sg-stats">
+      {stats.map((s) => (
+        <div key={s.label} className="sg-stat">
+          <div className="sg-stat-value">{s.value}</div>
+          <div className="sg-stat-label">{s.label}</div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function Matrix({
@@ -113,15 +145,19 @@ function BuildingCard({ opp }: { opp: Opportunity }) {
 
   return (
     <section className="sg-card">
-      <h2>{opp.address}</h2>
-      <p className="addr">
-        {opp.postcode} · {opp.borough} · <span style={{ textTransform: 'capitalize' }}>{opp.status}</span>
-      </p>
+      <div className="sg-card-head">
+        <div>
+          <h2>{opp.address}</h2>
+          <p className="addr">
+            {opp.postcode} · {opp.borough} · <span className="sg-status">{opp.status}</span>
+          </p>
+        </div>
+        <span className={`sg-convbadge ${c.isConverged ? 'on' : 'off'}`}>
+          {c.isConverged ? 'CONVERGED' : 'WATCHING'}
+        </span>
+      </div>
 
       <div className="sg-conv">
-        <span className={`sg-chip ${c.isConverged ? 'on' : 'off'}`}>
-          {c.isConverged ? 'Converged' : 'Not converged yet'}
-        </span>
         <span className="sg-chip">Pressure {c.pressureLayers}</span>
         <span className="sg-chip">Kinetic {c.kineticLayers}</span>
         <span className="sg-chip">Weakest signal {c.minConfidence.toFixed(1)}</span>
@@ -178,12 +214,16 @@ export default function SignalGrid() {
   return (
     <div className="sg-root">
       <div className="sg-wrap">
-        <div className="sg-top">
-          <h1>Signal grid</h1>
-          <div className="sg-sub">
-            Provenance over real, cited signals · {BUILDINGS.length} building · every number traces to a source record
+        <header className="sg-header">
+          <div className="sg-brand">
+            <span className="sg-mark" aria-hidden="true" />
+            <div>
+              <h1>Opportunity Radar</h1>
+              <div className="sg-sub">Provenance over real, cited signals · every number traces to a source record</div>
+            </div>
           </div>
-        </div>
+          <HeaderStats buildings={BUILDINGS} />
+        </header>
 
         <div className="sg-legend">
           <span className="k">
@@ -198,6 +238,7 @@ export default function SignalGrid() {
             <span className="sg-cdot" style={{ background: 'var(--context)' }} />
             Context
           </span>
+          <span className="sg-legend-sep" />
           <span className="k">
             <span className="sg-sw filed" />
             Filed
@@ -216,7 +257,11 @@ export default function SignalGrid() {
           </span>
         </div>
 
-        <Matrix buildings={BUILDINGS} selectedId={selectedId} onSelect={setSelectedId} />
+        <section className="sg-panel">
+          <div className="sg-panel-head">Signal matrix</div>
+          <Matrix buildings={BUILDINGS} selectedId={selectedId} onSelect={setSelectedId} />
+        </section>
+
         <BuildingCard opp={selected} />
 
         <div className="sg-foot">
