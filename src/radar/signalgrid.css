@@ -1,0 +1,722 @@
+/*
+  Signal grid — provenance view. Real, cited data only.
+  Empty cells are genuinely empty: a faint dotted outline, no fill, no badge,
+  no "coming soon". Sparse is correct and must look sparse.
+
+  Visual language: an operations-console read — deep field, glowing category
+  colour, monospace for anything that's a measured number. The dashboard is
+  several DIFFERENT widgets (gauge, mix chart, timeline, matrix, log) laid
+  out side by side, not one table given a dark background — structure, not
+  just palette, is what reads as a console.
+*/
+.sg-root {
+  --page: #f4f4f1;
+  --panel: #fcfcfb;
+  --panel-2: #f7f7f4;
+  --ink: #151513;
+  --ink2: #55534c;
+  --ink3: #8b897f;
+  --hair: #e4e3dc;
+  --hair2: #d3d1c8;
+  --kinetic: #2a78d6;
+  --pressure: #b8791f;
+  --context: #6b7280;
+  --kinetic-wash: rgba(42, 120, 214, 0.1);
+  --pressure-wash: rgba(184, 121, 31, 0.12);
+  --context-wash: rgba(107, 114, 128, 0.12);
+  --mono: ui-monospace, 'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  min-height: 100vh;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 'Geist Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Dark is the primary read for this surface — an ops console, not a memo.
+   Light mode is kept as a legible fallback, not the design target. */
+@media (prefers-color-scheme: dark) {
+  .sg-root {
+    --page: #05070c;
+    --panel: #0b0f18;
+    --panel-2: #0f1420;
+    --ink: #eaf2ff;
+    --ink2: #9fb0c9;
+    --ink3: #5d6b83;
+    --hair: #1b2434;
+    --hair2: #263248;
+    --kinetic: #35d6ff;
+    --pressure: #ffb648;
+    --context: #7c8aa5;
+    --kinetic-wash: rgba(53, 214, 255, 0.1);
+    --pressure-wash: rgba(255, 182, 72, 0.1);
+    --context-wash: rgba(124, 138, 165, 0.1);
+  }
+}
+:root[data-theme='dark'] .sg-root {
+  --page: #05070c;
+  --panel: #0b0f18;
+  --panel-2: #0f1420;
+  --ink: #eaf2ff;
+  --ink2: #9fb0c9;
+  --ink3: #5d6b83;
+  --hair: #1b2434;
+  --hair2: #263248;
+  --kinetic: #35d6ff;
+  --pressure: #ffb648;
+  --context: #7c8aa5;
+  --kinetic-wash: rgba(53, 214, 255, 0.1);
+  --pressure-wash: rgba(255, 182, 72, 0.1);
+  --context-wash: rgba(124, 138, 165, 0.1);
+}
+:root[data-theme='light'] .sg-root {
+  --page: #f4f4f1;
+  --panel: #fcfcfb;
+  --panel-2: #f7f7f4;
+  --ink: #151513;
+  --ink2: #55534c;
+  --ink3: #8b897f;
+  --hair: #e4e3dc;
+  --hair2: #d3d1c8;
+  --kinetic: #2a78d6;
+  --pressure: #b8791f;
+  --context: #6b7280;
+}
+
+.sg-root * {
+  box-sizing: border-box;
+}
+
+/* Faint console texture — a vignette + hairline grid, cheap and quiet. It's
+   atmosphere, not decoration that competes with the data. */
+.sg-root {
+  background-image:
+    radial-gradient(ellipse 900px 500px at 50% -10%, var(--kinetic-wash), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(127, 143, 168, 0.05) 0, rgba(127, 143, 168, 0.05) 1px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, rgba(127, 143, 168, 0.05) 0, rgba(127, 143, 168, 0.05) 1px, transparent 1px, transparent 32px);
+  background-attachment: fixed;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) .sg-root {
+    background-image: none;
+  }
+}
+:root[data-theme='light'] .sg-root {
+  background-image: none;
+}
+
+.sg-wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+/* ── header ── */
+.sg-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding-bottom: 18px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--hair);
+}
+.sg-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.sg-mark {
+  width: 11px;
+  height: 11px;
+  margin-top: 5px;
+  border-radius: 3px;
+  background: var(--kinetic);
+  box-shadow: 0 0 0 3px var(--kinetic-wash), 0 0 14px 1px var(--kinetic);
+  flex: none;
+}
+.sg-brand h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.sg-brand .sg-sub {
+  color: var(--ink3);
+  font-size: 12px;
+  margin-top: 3px;
+  max-width: 46ch;
+}
+
+.sg-stats {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+.sg-stat {
+  min-width: 84px;
+}
+.sg-stat-value {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.sg-stat-label {
+  margin-top: 5px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink3);
+}
+
+/* ── dashboard grid: a fixed rail of widgets beside the main matrix/log ── */
+.sg-dashboard {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+@media (max-width: 860px) {
+  .sg-dashboard {
+    grid-template-columns: 1fr;
+  }
+}
+.sg-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.sg-rail .sg-panel {
+  margin-bottom: 0;
+}
+.sg-panel--tight {
+  padding-bottom: 12px;
+}
+.sg-main {
+  min-width: 0;
+}
+.sg-main .sg-panel {
+  margin-bottom: 0;
+}
+
+/* ── legend ── */
+.sg-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 18px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink2);
+}
+.sg-legend--rail {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--panel);
+  gap: 10px 14px;
+}
+.sg-legend .k {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sg-cdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 6px 0 currentColor;
+}
+.sg-sw {
+  width: 22px;
+  height: 11px;
+  border-radius: 3px;
+  display: inline-block;
+  border: 1px solid var(--hair2);
+}
+.sg-sw.filed {
+  background: var(--ink2);
+}
+.sg-sw.derived {
+  background: repeating-linear-gradient(45deg, var(--ink3), var(--ink3) 2px, transparent 2px, transparent 5px);
+}
+.sg-sw.inferred {
+  background: transparent;
+  border: 1.5px solid var(--ink3);
+}
+.sg-sw.empty {
+  background: transparent;
+  border: 1px dotted var(--hair2);
+}
+
+/* ── panel chrome (shared by every widget) ── */
+.sg-panel {
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+}
+.sg-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--hair);
+  margin-bottom: 12px;
+}
+.sg-panel-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink3);
+}
+.sg-panel-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.sg-addr-sub {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+  padding: 0 16px;
+  margin: -6px 0 6px;
+}
+.sg-status {
+  text-transform: capitalize;
+}
+.sg-convbadge {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  padding: 4px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.sg-convbadge.on {
+  color: #04140f;
+  background: #35d6ff;
+  box-shadow: 0 0 14px -2px #35d6ff;
+}
+.sg-convbadge.off {
+  color: var(--ink2);
+  border: 1px dashed var(--hair2);
+  background: transparent;
+}
+.sg-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--hair2);
+  color: var(--ink2);
+  white-space: nowrap;
+}
+.sg-chip em {
+  font-style: normal;
+  color: var(--ink3);
+}
+.sg-chip.lead {
+  border-color: var(--kinetic);
+  color: var(--ink);
+}
+
+/* ── convergence gauge (rail) ── */
+.sg-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 16px 8px;
+}
+.sg-gauge svg {
+  display: block;
+}
+.sg-gauge-track {
+  fill: none;
+  stroke: var(--hair2);
+  stroke-width: 8;
+}
+.sg-gauge-arc {
+  fill: none;
+  stroke-width: 8;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease;
+}
+.sg-gauge-arc.kinetic {
+  stroke: var(--kinetic);
+  filter: drop-shadow(0 0 4px var(--kinetic));
+}
+.sg-gauge-arc.pressure {
+  stroke: var(--pressure);
+  filter: drop-shadow(0 0 4px var(--pressure));
+}
+.sg-gauge-verdict {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 700;
+  fill: var(--ink);
+}
+.sg-gauge-sub {
+  font-family: var(--mono);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+  fill: var(--ink3);
+}
+.sg-gauge-legend {
+  width: 100%;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+}
+.sg-gauge-legend > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sg-gauge-legend dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink2);
+  font-weight: 500;
+}
+.sg-gauge-legend dd {
+  margin: 0;
+  font-family: var(--mono);
+  color: var(--ink3);
+  white-space: nowrap;
+}
+
+/* ── category mix (rail) ── */
+.sg-mix {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 16px 6px;
+}
+.sg-mix-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+}
+.sg-mix-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink3);
+}
+.sg-mix-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--hair);
+  overflow: hidden;
+}
+.sg-mix-fill {
+  height: 100%;
+  border-radius: 3px 0 0 3px;
+}
+.sg-mix-fill.cat-kinetic {
+  background: var(--kinetic);
+  box-shadow: 0 0 6px var(--kinetic);
+}
+.sg-mix-fill.cat-pressure {
+  background: var(--pressure);
+  box-shadow: 0 0 6px var(--pressure);
+}
+.sg-mix-fill.cat-context {
+  background: var(--context);
+}
+.sg-mix-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: right;
+  color: var(--ink2);
+}
+
+/* ── evidence timeline (main, below the matrix) ── */
+.sg-timeline {
+  padding: 4px 20px 4px;
+}
+.sg-timeline-head {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink3);
+  margin-bottom: 16px;
+}
+.sg-timeline-track {
+  position: relative;
+  height: 20px;
+  margin: 0 6px;
+}
+.sg-timeline-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--hair2);
+}
+.sg-timeline-dot {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 6px currentColor;
+  cursor: default;
+}
+.sg-timeline-dot.cat-kinetic {
+  background: var(--kinetic);
+  color: var(--kinetic);
+}
+.sg-timeline-dot.cat-pressure {
+  background: var(--pressure);
+  color: var(--pressure);
+}
+.sg-timeline-dot.cat-context {
+  background: var(--context);
+  color: var(--context);
+}
+
+/* ── matrix ── */
+.sg-matrixwrap {
+  overflow-x: auto;
+  padding: 0 14px;
+}
+.sg-matrix {
+  display: grid;
+  gap: 4px;
+  min-width: 760px;
+}
+.sg-matrix .hcell {
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink3);
+  padding: 2px 4px;
+  align-self: end;
+  text-align: center;
+}
+.sg-matrix .rowlabel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  background: var(--panel-2);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.sg-matrix .rowlabel.sel {
+  border-color: var(--kinetic);
+  box-shadow: 0 0 0 1px var(--kinetic-wash);
+}
+.sg-matrix .rowlabel b {
+  font-size: 13px;
+  font-weight: 600;
+}
+.sg-matrix .rowlabel span {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+}
+.sg-cell {
+  position: relative;
+  min-height: 50px;
+  border-radius: 6px;
+  display: flex;
+  align-items: flex-end;
+  padding: 5px;
+  text-decoration: none;
+  overflow: hidden;
+  transition: filter 0.12s ease;
+}
+.sg-cell:is(a):hover {
+  filter: brightness(1.2);
+}
+.sg-cell .mk {
+  font-size: 11px;
+  line-height: 1;
+}
+.sg-cell .ct {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  background: var(--panel);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  min-width: 15px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cat-kinetic {
+  color: var(--kinetic);
+}
+.cat-pressure {
+  color: var(--pressure);
+}
+.cat-context {
+  color: var(--context);
+}
+/* factType = fill treatment */
+.sg-cell.st-filed {
+  background: var(--kinetic);
+  border: 1px solid var(--kinetic);
+  box-shadow: 0 0 12px -2px var(--kinetic);
+}
+.sg-cell.cat-pressure.st-filed {
+  background: var(--pressure);
+  border-color: var(--pressure);
+  box-shadow: 0 0 12px -2px var(--pressure);
+}
+.sg-cell.cat-context.st-filed {
+  background: var(--context);
+  border-color: var(--context);
+  box-shadow: 0 0 12px -2px var(--context);
+}
+.sg-cell.st-filed .mk {
+  color: #04070c;
+}
+.sg-cell.st-derived {
+  background: var(--kinetic-wash);
+  border: 1px dashed currentColor;
+}
+.sg-cell.cat-pressure.st-derived {
+  background: var(--pressure-wash);
+}
+.sg-cell.cat-context.st-derived {
+  background: var(--context-wash);
+}
+.sg-cell.st-inferred {
+  background: transparent;
+  border: 1.5px solid currentColor;
+}
+/* genuinely empty — no fill, no badge, no "coming soon" */
+.sg-cell.st-empty {
+  background: transparent;
+  border: 1px dotted var(--hair2);
+  pointer-events: none;
+}
+
+/* ── evidence log (full width, below the dashboard grid) ── */
+.sg-log .sg-evlist,
+.sg-log .sg-seq,
+.sg-log .sg-honest {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+.sg-evlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sg-ev {
+  display: grid;
+  grid-template-columns: 68px 16px 1fr;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hair);
+}
+.sg-ev:last-child {
+  border-bottom: 0;
+}
+.sg-ev-date {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink3);
+  font-variant-numeric: tabular-nums;
+}
+.sg-ev-mark {
+  font-size: 12px;
+}
+.sg-ev-layer {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink3);
+  margin-right: 8px;
+}
+.sg-ev-label {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--hair2);
+}
+.sg-ev-label:hover {
+  border-color: var(--kinetic);
+  color: var(--kinetic);
+}
+.sg-todo {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink3);
+  border: 1px dashed var(--hair2);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+}
+.sg-note {
+  font-size: 11.5px;
+  color: var(--ink2);
+  margin-top: 3px;
+}
+.sg-seq {
+  margin-top: 14px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: var(--ink2);
+  border-left: 3px solid var(--kinetic);
+  padding: 8px 12px;
+  background: var(--kinetic-wash);
+  border-radius: 0 6px 6px 0;
+}
+.sg-seq strong {
+  color: var(--ink);
+}
+.sg-honest {
+  font-size: 12px;
+  color: var(--ink3);
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+.sg-foot {
+  margin-top: 22px;
+  font-size: 11px;
+  color: var(--ink3);
+}

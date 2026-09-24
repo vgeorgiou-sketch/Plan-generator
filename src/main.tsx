@@ -1,15 +1,13 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import App from './App.tsx'
-import { initClipper } from './geometry/clipperInstance'
+import RadarApp from './radar/RadarApp'
 
-const root = createRoot(document.getElementById('root')!)
-
-initClipper().then(() => {
-  root.render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  )
-})
+// This branch hosts the Opportunity Radar dashboard prototype.
+// The floorplate core-comparison tool remains in src/ (see App.tsx);
+// swap the import back to restore it.
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <RadarApp />
+  </StrictMode>,
+)
